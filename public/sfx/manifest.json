@@ -1,0 +1,353 @@
+{
+"step_tile": [
+"step_tile_0.mp3",
+"step_tile_1.mp3",
+"step_tile_2.mp3",
+"step_tile_3.mp3",
+"step_tile_4.mp3",
+"step_tile_5.mp3",
+"step_tile_6.mp3",
+"step_tile_7.mp3",
+"step_tile_8.mp3",
+"step_tile_9.mp3",
+"step_tile_10.mp3",
+"step_tile_11.mp3",
+"step_tile_12.mp3",
+"step_tile_13.mp3"
+],
+"step_carpet": [
+"step_carpet_0.mp3",
+"step_carpet_1.mp3",
+"step_carpet_2.mp3",
+"step_carpet_3.mp3",
+"step_carpet_4.mp3"
+],
+"step_water": [
+"step_water_0.mp3",
+"step_water_1.mp3",
+"step_water_2.mp3",
+"step_water_3.mp3",
+"step_water_4.mp3",
+"step_water_5.mp3",
+"step_water_6.mp3",
+"step_water_7.mp3"
+],
+"step_metal": [
+"step_metal_0.mp3",
+"step_metal_1.mp3",
+"step_metal_2.mp3",
+"step_metal_3.mp3",
+"step_metal_4.mp3",
+"step_metal_5.mp3",
+"step_metal_6.mp3",
+"step_metal_7.mp3"
+],
+"glass_crunch": [
+"glass_crunch_0.mp3",
+"glass_crunch_1.mp3",
+"glass_crunch_2.mp3",
+"glass_crunch_3.mp3",
+"glass_crunch_4.mp3"
+],
+"breath_calm": [
+"breath_calm_0.mp3",
+"breath_calm_1.mp3",
+"breath_calm_2.mp3",
+"breath_calm_3.mp3",
+"breath_calm_4.mp3",
+"breath_calm_5.mp3",
+"breath_calm_6.mp3",
+"breath_calm_7.mp3",
+"breath_calm_8.mp3",
+"breath_calm_9.mp3"
+],
+"breath_heavy": [
+"breath_heavy_0.mp3",
+"breath_heavy_1.mp3",
+"breath_heavy_2.mp3",
+"breath_heavy_3.mp3",
+"breath_heavy_4.mp3",
+"breath_heavy_5.mp3",
+"breath_heavy_6.mp3",
+"breath_heavy_7.mp3",
+"breath_heavy_8.mp3"
+],
+"heart": [
+"heart_0.mp3"
+],
+"click": [
+"click_0.mp3",
+"click_1.mp3",
+"click_2.mp3",
+"click_3.mp3",
+"click_4.mp3"
+],
+"stone": [
+"stone_0.mp3",
+"stone_1.mp3",
+"stone_2.mp3",
+"stone_3.mp3",
+"stone_4.mp3",
+"stone_5.mp3",
+"stone_6.mp3",
+"stone_7.mp3"
+],
+"whoosh": [
+"whoosh_0.mp3",
+"whoosh_1.mp3"
+],
+"drip": [
+"drip_0.mp3",
+"drip_1.mp3",
+"drip_2.mp3",
+"drip_3.mp3",
+"drip_4.mp3",
+"drip_5.mp3",
+"drip_6.mp3",
+"drip_7.mp3",
+"drip_8.mp3",
+"drip_9.mp3"
+],
+"creak": [
+"creak_0.mp3",
+"creak_1.mp3",
+"creak_2.mp3",
+"creak_3.mp3",
+"creak_4.mp3",
+"creak_5.mp3",
+"creak_6.mp3",
+"creak_7.mp3",
+"creak_8.mp3",
+"creak_9.mp3"
+],
+"knock": [
+"knock_0.mp3",
+"knock_1.mp3",
+"knock_2.mp3",
+"knock_3.mp3",
+"knock_4.mp3",
+"knock_5.mp3",
+"knock_6.mp3"
+],
+"door": [
+"door_0.mp3",
+"door_1.mp3"
+],
+"slam": [
+"slam_0.mp3",
+"slam_1.mp3",
+"slam_2.mp3",
+"slam_3.mp3",
+"slam_4.mp3"
+],
+"metal_heavy": [
+"metal_heavy_0.mp3",
+"metal_heavy_1.mp3",
+"metal_heavy_2.mp3",
+"metal_heavy_3.mp3",
+"metal_heavy_4.mp3",
+"metal_heavy_5.mp3",
+"metal_heavy_6.mp3",
+"metal_heavy_7.mp3",
+"metal_heavy_8.mp3",
+"metal_heavy_9.mp3"
+],
+"pickup": [
+"pickup_0.mp3",
+"pickup_1.mp3",
+"pickup_2.mp3"
+],
+"paper": [
+"paper_0.mp3",
+"paper_1.mp3"
+],
+"ding": [
+"ding_0.mp3",
+"ding_1.mp3"
+],
+"bonecrack": [
+"bonecrack_0.mp3",
+"bonecrack_1.mp3",
+"bonecrack_2.mp3",
+"bonecrack_3.mp3"
+],
+"flesh": [
+"flesh_0.mp3",
+"flesh_1.mp3",
+"flesh_2.mp3",
+"flesh_3.mp3",
+"flesh_4.mp3",
+"flesh_5.mp3",
+"flesh_6.mp3",
+"flesh_7.mp3",
+"flesh_8.mp3",
+"flesh_9.mp3"
+],
+"tick": [
+"tick_0.mp3",
+"tick_1.mp3",
+"tick_2.mp3",
+"tick_3.mp3",
+"tick_4.mp3"
+],
+"m_growl": [
+"m_growl_0.mp3",
+"m_growl_1.mp3",
+"m_growl_2.mp3",
+"m_growl_3.mp3",
+"m_growl_4.mp3",
+"m_growl_5.mp3",
+"m_growl_6.mp3",
+"m_growl_7.mp3",
+"m_growl_8.mp3",
+"m_growl_9.mp3"
+],
+"m_short": [
+"m_short_0.mp3",
+"m_short_1.mp3",
+"m_short_2.mp3",
+"m_short_3.mp3",
+"m_short_4.mp3",
+"m_short_5.mp3",
+"m_short_6.mp3",
+"m_short_7.mp3",
+"m_short_8.mp3",
+"m_short_9.mp3",
+"m_short_10.mp3",
+"m_short_11.mp3",
+"m_short_12.mp3",
+"m_short_13.mp3",
+"m_short_14.mp3",
+"m_short_15.mp3",
+"m_short_16.mp3",
+"m_short_17.mp3",
+"m_short_18.mp3",
+"m_short_19.mp3",
+"m_short_20.mp3",
+"m_short_21.mp3",
+"m_short_22.mp3",
+"m_short_23.mp3",
+"m_short_24.mp3",
+"m_short_25.mp3",
+"m_short_26.mp3",
+"m_short_27.mp3",
+"m_short_28.mp3",
+"m_short_29.mp3"
+],
+"m_roar": [
+"m_roar_0.mp3",
+"m_roar_1.mp3",
+"m_roar_2.mp3",
+"m_roar_3.mp3"
+],
+"m_scream": [
+"m_scream_0.mp3",
+"m_scream_1.mp3",
+"m_scream_2.mp3",
+"m_scream_3.mp3",
+"m_scream_4.mp3",
+"m_scream_5.mp3",
+"m_scream_6.mp3"
+],
+"m_breath": [
+"m_breath_0.mp3",
+"m_breath_1.mp3"
+],
+"m_sniff": [
+"m_sniff_0.mp3"
+],
+"m_click": [
+"m_click_0.mp3",
+"m_click_1.mp3",
+"m_click_2.mp3",
+"m_click_3.mp3"
+],
+"m_hiss": [
+"m_hiss_0.mp3",
+"m_hiss_1.mp3",
+"m_hiss_2.mp3",
+"m_hiss_3.mp3",
+"m_hiss_4.mp3"
+],
+"sting_low": [
+"sting_low_0.mp3",
+"sting_low_1.mp3",
+"sting_low_2.mp3",
+"sting_low_3.mp3"
+],
+"sting_mid": [
+"sting_mid_0.mp3",
+"sting_mid_1.mp3",
+"sting_mid_2.mp3",
+"sting_mid_3.mp3",
+"sting_mid_4.mp3",
+"sting_mid_5.mp3",
+"sting_mid_6.mp3",
+"sting_mid_7.mp3",
+"sting_mid_8.mp3",
+"sting_mid_9.mp3",
+"sting_mid_10.mp3"
+],
+"sting_high": [
+"sting_high_0.mp3",
+"sting_high_1.mp3",
+"sting_high_2.mp3",
+"sting_high_3.mp3",
+"sting_high_4.mp3",
+"sting_high_5.mp3",
+"sting_high_6.mp3",
+"sting_high_7.mp3",
+"sting_high_8.mp3",
+"sting_high_9.mp3",
+"sting_high_10.mp3",
+"sting_high_11.mp3",
+"sting_high_12.mp3",
+"sting_high_13.mp3",
+"sting_high_14.mp3",
+"sting_high_15.mp3",
+"sting_high_16.mp3",
+"sting_high_17.mp3",
+"sting_high_18.mp3",
+"sting_high_19.mp3"
+],
+"sting_mid2": [
+"sting_mid2_0.mp3",
+"sting_mid2_1.mp3",
+"sting_mid2_2.mp3",
+"sting_mid2_3.mp3",
+"sting_mid2_4.mp3",
+"sting_mid2_5.mp3",
+"sting_mid2_6.mp3",
+"sting_mid2_7.mp3",
+"sting_mid2_8.mp3",
+"sting_mid2_9.mp3",
+"sting_mid2_10.mp3",
+"sting_mid2_11.mp3",
+"sting_mid2_12.mp3",
+"sting_mid2_13.mp3",
+"sting_mid2_14.mp3",
+"sting_mid2_15.mp3",
+"sting_mid2_16.mp3",
+"sting_mid2_17.mp3",
+"sting_mid2_18.mp3",
+"sting_mid2_19.mp3"
+],
+"amb_belly": [
+"amb_belly_0.mp3"
+],
+"amb_hell": [
+"amb_hell_0.mp3"
+],
+"loop_vent": [
+"loop_vent_0.mp3"
+],
+"loop_gen": [
+"loop_gen_0.mp3"
+],
+"loop_lift": [
+"loop_lift_0.mp3"
+],
+"loop_water": [
+"loop_water_0.mp3"
+]
+}

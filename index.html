@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ЭХО</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="hud" class="hidden">
+      <div id="objective"></div>
+      <div id="location"></div>
+      <div id="crosshair"></div>
+      <div id="prompt"></div>
+      <div id="hint"></div>
+      <div id="siege" class="hidden">
+        <div class="row"><span>ЛИФТ</span><div class="bar"><i id="sg-lift"></i></div><b id="sg-floor"></b></div>
+        <div class="row"><span>ПИТАНИЕ</span><div class="bar"><i id="sg-power"></i></div><b id="sg-pw"></b></div>
+        <div class="row small"><span id="sg-A"></span><span id="sg-B"></span></div>
+        <div id="sg-warn"></div>
+      </div>
+      <div id="brief" class="hidden">
+        <h4>ЛИФТ ИДЁТ ДВЕ МИНУТЫ</h4>
+        <p>В холл два входа: <b>дверь</b> из перехода и <b>люк</b> вентиляции.</p>
+        <p>Шаги и дыхание за дверью — <b>[1]</b> опустить заслонку двери.</p>
+        <p>Скрежет в коробе — <b>[2]</b> закрыть люк.</p>
+        <p>Закрывай, когда оно уже у входа. Ушло — открывай: заслонки едят питание.</p>
+        <p><b>[3]</b> — сейсмодатчик: где оно сейчас (−2% питания).</p>
+      </div>
+      <div id="radar" class="hidden"><canvas id="radar-c" width="240" height="240"></canvas><div>СЕЙСМОДАТЧИК</div></div>
+      <div id="meters">
+        <div class="meter" id="m-breath"><span>ДЫХАНИЕ</span><div class="bar"><i></i></div></div>
+        <div class="meter" id="m-stamina"><span>СИЛЫ</span><div class="bar"><i></i></div></div>
+        <div id="stones"></div>
+        <div id="stance"></div>
+      </div>
+    </div>
+
+    <div id="start" class="screen">
+      <div class="inner">
+        <h1>ЭХО</h1>
+        <div class="sub">объект «Камертон» · 1987</div>
+        <div id="intro"></div>
+        <div class="phones">🎧 В наушниках. Здесь всё решает слух.</div>
+        <button id="continue" class="hidden">ПРОДОЛЖИТЬ</button>
+        <button id="play" disabled>ЗАГРУЗКА…</button>
+        <label class="sens">Графика <select class="quality"><option value="high">Высокая</option><option value="mid">Средняя</option><option value="low">Низкая</option></select></label>
+        <div class="controls">
+          <div><b>WASD</b> идти</div>
+          <div><b>Shift</b> бежать (громко)</div>
+          <div><b>C</b> красться (тихо)</div>
+          <div><b>F</b> щелчок языком — осмотреться</div>
+          <div><b>Q / ПКМ</b> задержать дыхание</div>
+          <div><b>ЛКМ</b> бросить камень</div>
+          <div><b>E</b> взаимодействие</div>
+          <div><b>Esc</b> пауза</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="pause" class="screen hidden">
+      <div class="inner">
+        <h2>ПАУЗА</h2>
+        <button id="resume">ПРОДОЛЖИТЬ</button>
+        <button id="restart" class="ghost">НАЧАТЬ ЗАНОВО</button>
+        <label class="sens">Чувствительность мыши <input id="sens" type="range" min="0.5" max="3" step="0.1" value="1.4" /></label>
+        <label class="sens">Громкость <input id="vol" type="range" min="0" max="1.5" step="0.05" value="0.9" /></label>
+        <label class="sens">Графика <select class="quality"><option value="high">Высокая</option><option value="mid">Средняя</option><option value="low">Низкая</option></select></label>
+        <div class="controls">
+          <div><b>WASD</b> идти</div>
+          <div><b>Shift</b> бежать</div>
+          <div><b>C</b> красться</div>
+          <div><b>F</b> щелчок</div>
+          <div><b>Q / ПКМ</b> не дышать</div>
+          <div><b>ЛКМ</b> камень</div>
+          <div><b>E</b> действие</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="note" class="hidden">
+      <div class="paper">
+        <h3 id="note-title"></h3>
+        <pre id="note-body"></pre>
+        <div class="close">[E] закрыть · время идёт</div>
+      </div>
+    </div>
+
+    <div id="death" class="screen hidden">
+      <div class="inner">
+        <h2 class="red">ОНО ОТВЕТИЛО</h2>
+        <div id="tip"></div>
+        <button id="retry">ВЕРНУТЬСЯ</button>
+      </div>
+    </div>
+
+    <div id="end" class="screen hidden">
+      <div class="inner">
+        <div id="end-text"></div>
+        <div id="end-stats"></div>
+        <button id="again" class="late">СЫГРАТЬ ЕЩЁ РАЗ</button>
+      </div>
+    </div>
+
+    <div id="slits" class="hidden"></div>
+    <div id="fade"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
