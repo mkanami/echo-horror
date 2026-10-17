@@ -7,12 +7,29 @@ function handQ(fingers,back){const z=fingers.clone().normalize().negate(),y=back
 const wrist=(point,q,pose='fuseGrip')=>({pos:point.clone().sub(grip.clone().applyQuaternion(q)),q,pose});
 const rest=V(-.24,-.48,-.24);
 
+export const valveRotation = time => time * 2;
+
 // Authored first-person keyframes. Props and palms are sampled from the same
 // transform, so an object cannot move ahead of the fingers holding it.
 export function sampleWork(frame,camInv){
   const {kind,k}=frame, target=frame.target.clone().applyMatrix4(camInv);
   const normal=(frame.normal||V(0,0,1)).clone().transformDirection(camInv);
   const up=V(0,1,0).transformDirection(camInv);
+  if(kind==='pryLift'){
+    const side=up.clone().cross(normal).normalize(),spread=.035+k*.72;
+    const palms=[-1,1].map(sign=>{
+      const q=handQ(up.clone(),normal.clone());
+      return wrist(target.clone().addScaledVector(side,sign*spread).addScaledVector(normal,.045),q,k<.04?'edge':'flat');
+    });
+    return {left:palms[0],right:palms[1],stage:'створки'};
+  }
+  if(kind==='caveValve'){
+    const side=up.clone().cross(normal).normalize();
+    const q=handQ(up.clone(),normal.clone());
+    const angle=valveRotation(frame.time);
+    const at=target.clone().addScaledVector(side,Math.sin(angle)*.2).addScaledVector(up,Math.cos(angle)*.2);
+    return {left:wrist(at,q,'handle'),right:wrist(target.clone().addScaledVector(side,.22),q,'flat'),stage:'контур'};
+  }
   if(kind==='unscrew'||kind==='pickupFuse'){
     const mounted=kind==='unscrew',gripAt=mounted?.22:.34,pullAt=mounted?.64:.4;
     const twistT=THREE.MathUtils.clamp((k-.24)/.4,0,1);

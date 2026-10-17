@@ -7,6 +7,7 @@ import { echoMaterial, echoPoints } from './echo.js';
 import * as P from './props.js';
 import { woodLeaf, steelLeaf, liftLeaf, doorFrame, ease } from './doors.js';
 import { createFuse, workMaterials } from './work-props.js';
+import { insideLift, takeLiftSurfaces } from './lift-asset.js';
 
 export const W = 64;
 export const H = 56;
@@ -248,9 +249,17 @@ export class Level {
   buildArchitecture() {
     this.wallRuns = [];
     const groups = {}; // key -> {pos:[], nor:[]}
+    const liftGroups={};
+    this.liftRoot=new THREE.Group();this.liftRoot.name='hospital-lift';
+    this.liftColliders=[];
     const lines = [];
     const quad = (key, a, b, c, d, n) => {
-      const g = (groups[key] ||= { pos: [], nor: [] });
+      const cab=[a,b,c,d].every(p=>insideLift(...p));
+      const target=cab?liftGroups:groups;
+      const g = (target[key] ||= { pos: [], nor: [] });
+      if(cab&&n[1]===0){
+        this.liftColliders.push({minX:Math.min(a[0],b[0],c[0],d[0])-.025,maxX:Math.max(a[0],b[0],c[0],d[0])+.025,minY:Math.min(a[1],b[1]),maxY:Math.max(c[1],d[1]),minZ:Math.min(a[2],b[2],c[2],d[2])-.025,maxZ:Math.max(a[2],b[2],c[2],d[2])+.025});
+      }
       for (const v of [a, b, c, a, c, d]) {
         g.pos.push(v[0], v[1], v[2]);
         g.nor.push(n[0], n[1], n[2]);
@@ -347,18 +356,19 @@ export class Level {
     }
 
     const arch = new THREE.Group();
-    for (const key in groups) {
+    for(const [target,sets]of [[arch,groups],[this.liftRoot,liftGroups]])for (const key in sets) {
       const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(groups[key].pos, 3));
-      g.setAttribute('normal', new THREE.Float32BufferAttribute(groups[key].nor, 3));
+      g.setAttribute('position', new THREE.Float32BufferAttribute(sets[key].pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(sets[key].nor, 3));
       g.computeBoundingSphere();
-      arch.add(new THREE.Mesh(g, this.mat[key]));
+      target.add(new THREE.Mesh(g, this.mat[key]));
     }
     const lg = new THREE.BufferGeometry();
     lg.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
     arch.add(new THREE.LineSegments(lg, this.lineMat.arch));
     arch.add(echoPoints(lg, { boost: 1.0 }));
     this.scene.add(arch);
+    this.scene.add(this.liftRoot);
   }
 
   // ----------------------------------------------------------------- props
@@ -840,6 +850,9 @@ export class Level {
       P.boards(B.at(x + nx * 0.02, 0, z + nz * 0.02, Math.atan2(nx, nz)), 0.9, 2.05);
     }
 
+    const liftProps=new Builder();liftProps.surfaces=takeLiftSurfaces(B.surfaces);
+    this.liftRoot.add(liftProps.build(this.mat,this.lineMat));
+    this.liftColliders.push(...B.colliders.filter(c=>insideLift(c.minX,c.minY??0,c.minZ)&&insideLift(c.maxX,c.maxY??1.5,c.maxZ)));
     this.scene.add(B.build(this.mat, this.lineMat));
     this.colliders = B.colliders;
     this.audit = B.audit || [];
@@ -959,7 +972,7 @@ export class Level {
     const add = (type, pos, parts, extra = {}) => {
       const obj = parts.isObject3D ? parts : makeObject(parts, type === 'note' ? paperMat : mat, lm);
       obj.position.copy(pos);
-      this.scene.add(obj);
+      (type==='cab'?this.liftRoot:this.scene).add(obj);
       const it = { type, pos: pos.clone(), obj, taken: false, ...extra };
       this.items.push(it);
       return it;
@@ -1067,7 +1080,7 @@ export class Level {
     for (const s of [-1, 1]) {
       const g = liftLeaf(M, LM, 1.5, 2.4);
       g.position.set(7.5 + s * 0.75, 1.2, 3.02);
-      this.scene.add(g);
+      this.liftRoot.add(g);
       lift.leaves.push({ obj: g, base: 7.5 + s * 0.75, s });
     }
     this.doors.push(lift);
@@ -1190,14 +1203,18 @@ export class Level {
   }
 
   // push circle (pos.x,pos.z,r) out of walls/props
-  collide(pos, r) {
+  collidePlayer(pos, r) {
+    this.collide(pos, r, true);
+  }
+
+  collide(pos, r, allowPits = false) {
     for (let iter = 0; iter < 2; iter++) {
       const i0 = Math.floor(pos.x - r - 1), i1 = Math.floor(pos.x + r + 1);
       const j0 = Math.floor(pos.z - r - 1), j1 = Math.floor(pos.z + r + 1);
       const seen = new Set();
       for (let j = j0; j <= j1; j++)
         for (let i = i0; i <= i1; i++) {
-          if (!this.open(i, j)) this._push(pos, r, i, i + 1, j, j + 1);
+          if (!this.open(i, j) && !(allowPits && this.isPit?.(i + 0.5, j + 0.5))) this._push(pos, r, i, i + 1, j, j + 1);
           else if (i >= 0 && j >= 0 && i < W && j < H)
             for (const c of this.hash[j * W + i]) {
               if (seen.has(c)) continue;
@@ -1259,7 +1276,7 @@ export class Level {
       const all = grid();
       this.doors.forEach((d, k) => (d.closed = saved[k]));
       const reach = new Uint8Array(NW * NH);
-      const s0 = Math.floor(50.6 / S) * NW + Math.floor(34.9 / S);
+      const s0 = Math.floor((this.spawn?.z ?? 50.6) / S) * NW + Math.floor((this.spawn?.x ?? 34.9) / S);
       const stack = [s0];
       reach[s0] = 1;
       while (stack.length) {

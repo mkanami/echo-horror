@@ -372,6 +372,7 @@ function tex(name, color) {
 
 // how deep the relief of each texture is, in metres (parallax from its height map)
 const RELIEF = {
+  'cave/basalt':.055,'cave/limestone':.05,'cave/shale':.07,'cave/calcite':.035,'cave/wetrock':.05,'cave/flowstone':.06,'cave/breccia':.06,'cave/salt':.04,'cave/clay':.02,'cave/silt':.015,'cave/gravel':.045,'cave/algae':.018,'cave/ceramic':.022,'cave/ochretile':.025,'cave/porcelain':.012,'cave/copper':.022,'cave/corroded':.032,'cave/enamel':.02,'cave/mesh':.03,'cave/cable':.012,'cave/gauze':.014,'cave/canvas':.015,'cave/sediment':.045,'cave/fossil':.045,
   brick: 0.0918, brick2: 0.0918, cfloor: 0.0612, conc3: 0.0551, grate: 0.0765, dplate: 0.0306, plates: 0.0367, plates2: 0.0367,
   tile: 0.0245, wtile: 0.0214, wtile2: 0.0214, btile: 0.0214, tile3: 0.0245, tile4: 0.0245, terrazzo: 0.0122,
   wall: 0.0367, ceil: 0.0306, conc2: 0.0428, bunker: 0.049, plaster: 0.0367, plaster2: 0.0367, plaster3: 0.0367, plaster4: 0.0367,

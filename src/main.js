@@ -12,7 +12,7 @@ import { AudioEngine } from './audio.js';
 import { Level } from './level.js';
 import { Player } from './player.js';
 import { Monster } from './monster.js';
-import { INTRO, NOTES, TIPS, ENDING } from './story.js';
+import { INTRO, NOTES, TIPS, CAVE_ENDING } from './story.js';
 import { Siege, SIEGE_TIME } from './siege.js';
 import { ViewModel } from './viewmodel.js';
 import { Extras } from './extras.js';
@@ -22,6 +22,9 @@ import { GeneratorSequence, FUSE_ACTIONS } from './interaction-sequence.js';
 import { GeneratorProps } from './work-props.js';
 import { RoomVisibility } from './room-visibility.js';
 import { createTouchControls } from './touch-controls.js';
+import { CaveLevel } from './cave-level.js';
+import { CaveChapter } from './cave-chapter.js';
+import { LIFT_OFFSET } from './lift-asset.js';
 
 const $ = (id) => document.getElementById(id);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -270,10 +273,10 @@ const level = new Level(scene);
 const generatorProps = new GeneratorProps(scene);
 const staticBatches=[];
 scene.traverse(o=>{if(o.userData.staticBatch)staticBatches.push(o);});
-const roomVisibility=new RoomVisibility(level,staticBatches);
+let roomVisibility=new RoomVisibility(level,staticBatches);
 const dust = createDust();
 scene.add(dust);
-audio.occlusion = (pos) => level.occlusion(camera.position, pos);
+audio.occlusion = (pos) => player.level.occlusion(camera.position, pos);
 
 let roomK = 1; // 0.55 in a cupboard of a room .. 1 in corridors and halls
 const game = {
@@ -352,6 +355,42 @@ monster.onWise = () => {
 const extras = new Extras({ level, audio, game, player, scene });
 extras.build();
 extras.monster = monster;
+const hospitalObjects=[...scene.children];
+const caveRoot=new THREE.Group();caveRoot.visible=false;scene.add(caveRoot);
+const caveLevel=new CaveLevel(caveRoot);
+caveLevel.bindOriginalLift(level);
+const caveBatches=[];caveRoot.traverse(o=>{if(o.userData.staticBatch)caveBatches.push(o);});
+const caveVisibility=new RoomVisibility(caveLevel,caveBatches);
+// Open caverns have wide cyclic sightlines; the hospital's cell portal solver
+// is intended for narrow corridors. Mesh frustum culling still applies here.
+caveVisibility.enabled=false;
+caveVisibility.stats.visible=caveBatches.length;
+const chapter=new CaveChapter({level:caveLevel,root:caveRoot,game,player,monster,audio,vm,save:saveCaveCheckpoint,complete:finishCave,hide:toggleHiding});
+function startCave(saved=null,entry=null){
+  cancelWork();timers.length=0;hintQueue.length=0;resetObjective();
+  siege.stop();
+  for(const obj of hospitalObjects)if(obj!==monster.obj&&obj!==dust)obj.visible=false;
+  monster.despawn();
+  for(const loop of [waterLoop,generator,lift,drone])if(loop)loop.setGain(0,.1);
+  roomVisibility=caveVisibility;echo.clear();chapter.start(saved,entry);
+  psyMem=psyFlare=smear=glitchT=0;
+  $('location').textContent='';$('location').style.opacity=0;
+  $('hud').classList.remove('hidden');$('slits').classList.add('hidden');
+}
+function saveCaveCheckpoint(){
+  game.cpDeaths=0;
+  const data={v:1,chapter:'cave',cave:chapter.snapshot(),time:game.time,deaths:game.deaths};
+  game.checkpoint=data;
+  try{localStorage.setItem('echo.save',JSON.stringify(data));}catch(_){}
+}
+function finishCave(){
+  game.state='end';player.frozen=true;vm.work=null;
+  clearSave();$('fade').style.opacity=1;
+  if(document.pointerLockElement)document.exitPointerLock();
+  $('hud').classList.add('hidden');$('end').classList.remove('hidden');
+  $('end-text').innerHTML=CAVE_ENDING.map((text,i)=>`<p style="animation-delay:${i*1.8}s">${text}</p>`).join('');
+  $('end-stats').textContent=`ГОРИЗОНТ −11 ПРОЙДЕН · смертей: ${game.deaths}`;
+}
 let chaseHinted = false;
 monster.onChase = (on) => {
   if (on) {
@@ -451,7 +490,7 @@ addEventListener('keydown', (e) => {
     if (e.code === 'Escape') { pause(); return; }
     if (player.fallT > 0) return;
     if (e.code === 'KeyF' && !vm.work) player.click();
-    if (e.code === 'KeyC' && !(player.crouch && level.ceilAt(Math.floor(player.pos.x), Math.floor(player.pos.z)) < 1.7)) player.crouch = !player.crouch;
+    if (e.code === 'KeyC' && !(player.crouch && player.level.ceilAt(Math.floor(player.pos.x), Math.floor(player.pos.z)) < 1.7)) player.crouch = !player.crouch;
     if (e.code === 'KeyE') interact();
     if (e.code === 'KeyG' && !vm.work && extras.throwClock(camera)) vm.throw('clock');
     if (siege && siege.active && ['Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(e.code)) {
@@ -572,6 +611,7 @@ function updateLocation(dt) {
 }
 
 function objective() {
+  if(chapter.active)return chapter.objective();
   const f = game.flags;
   if (f.arrived) return 'Войди в лифт.';
   if (siege?.stalled) return 'Лифт встал. Удерживай [E] у кнопки вызова, чтобы перезапустить.';
@@ -691,7 +731,7 @@ function promptFor(it) {
       return `Подкачка · ${Math.min(5,Math.floor(frame.time)+1)} / 5 — громко`;
     }
     case 'call': return siege.stalled ? hold?.it === it ? `Перезапуск · ${Math.min(100, Math.round(hold.t / 2 * 100))}%` : '[держи E] Перезапустить лифт' : f.called ? '' : f.powered ? '[E] Вызвать лифт' : 'Кнопка вызова. Нет питания.';
-    case 'cab': return f.arrived ? hold?.it === it ? 'Закрываешь двери… Держи E' : '[держи E] Закрыть двери и ехать наверх' : '';
+    case 'cab': return f.arrived ? hold?.it === it ? 'Закрываешь двери… Держи E' : '[держи E] Закрыть двери и запустить лифт' : '';
     case 'labdoor': return f.card ? (hold && hold.it.type === 'labdoor' ? `Открываешь медленно… ${Math.round((hold.t / 2.5) * 100)}%` : '[держи E] Приложить карту и открыть тихо') : 'Шлюз заперт. Нужна карта доступа.';
     case 'locked': return '[E] Дёрнуть ручку';
     case 'slam': { const d = level.door(it.door); return d.broken ? 'Дверь выбита.' : d.closed ? '[E] Открыть дверь' : '[E] Захлопнуть дверь (громко)'; }
@@ -702,6 +742,35 @@ function promptFor(it) {
     case 'seismo': return siege.active ? siege.pingCooldown > 0 ? `Датчик заряжается · ${Math.ceil(siege.pingCooldown)} с` : '[E] Сейсмодатчик (−8% питания)' : 'Сейсмодатчик. Экран мёртв.';
   }
   return extras.prompt(it) || '';
+}
+
+function toggleHiding(it) {
+  const f=game.flags;
+  if(player.hidden){
+    player.unhide();
+    $('slits').classList.add('hidden');
+    if(it.low)return;
+    audio.play('door',it.pos,{gain:.35,rate:1.6,wet:.4});
+    game.noise(it.pos.clone(),{radius:2.5,visual:2,source:'player',kind:'door',color:COLORS.player,strength:.5});
+    return;
+  }
+  player.hide(it);
+  if(it.low){
+    audio.play('creak',it.pos,{gain:.25,rate:1.4,wet:.3});
+    game.noise(it.pos.clone(),{radius:1.8,visual:1.5,source:'player',kind:'crouch',color:COLORS.player,strength:.4});
+    if(!f.bedHint){
+      f.bedHint=true;
+      game.hint('Под кроватью тебя не видно. Но дыхание слышно — если оно встанет рядом, не дыши.',5);
+    }
+    return;
+  }
+  $('slits').classList.remove('hidden');
+  audio.play('door',it.pos,{gain:.3,rate:1.7,wet:.4});
+  game.noise(it.pos.clone(),{radius:2.2,visual:2,source:'player',kind:'door',color:COLORS.player,strength:.5});
+  if(!f.lockerHint){
+    f.lockerHint=true;
+    game.hint('В шкафчике дыхание глуше. Но если оно встанет вплотную — не дыши.',5);
+  }
 }
 
 function take(it) {
@@ -855,6 +924,7 @@ function actFor(it) {
 }
 
 function interact() {
+  if(chapter.active){chapter.interact(camera);return;}
   if (player.fallT > 0) return;
   const it = focus;
   if (!it || it.taken || itemAction || hold) return;
@@ -932,31 +1002,7 @@ function interact() {
       break;
     }
     case 'locker':
-      if (player.hidden) {
-        player.unhide();
-        $('slits').classList.add('hidden');
-        if (it.low) break;
-        audio.play('door', it.pos, { gain: 0.35, rate: 1.6, wet: 0.4 });
-        game.noise(it.pos.clone(), { radius: 2.5, visual: 2, source: 'player', kind: 'door', color: COLORS.player, strength: 0.5 });
-      } else {
-        player.hide(it);
-        if (it.low) {
-          audio.play('creak', it.pos, { gain: 0.25, rate: 1.4, wet: 0.3 });
-          game.noise(it.pos.clone(), { radius: 1.8, visual: 1.5, source: 'player', kind: 'crouch', color: COLORS.player, strength: 0.4 });
-          if (!f.bedHint) {
-            f.bedHint = true;
-            game.hint('Под кроватью тебя не видно. Но дыхание слышно — если оно встанет рядом, не дыши.', 5);
-          }
-          break;
-        }
-        $('slits').classList.remove('hidden');
-        audio.play('door', it.pos, { gain: 0.3, rate: 1.7, wet: 0.4 });
-        game.noise(it.pos.clone(), { radius: 2.2, visual: 2, source: 'player', kind: 'door', color: COLORS.player, strength: 0.5 });
-        if (!f.lockerHint) {
-          f.lockerHint = true;
-          game.hint('В шкафчике дыхание глуше. Но если оно встанет вплотную — не дыши.', 5);
-        }
-      }
+      toggleHiding(it);
       break;
     case 'shutterA':
     case 'shutterB':
@@ -1112,35 +1158,12 @@ function liftArrive() {
 }
 
 function ending() {
-  game.state = 'end';
-  clearSave();
-  siege.stop();
-  player.frozen = true;
-  level.setDoor('lift', false);
-  audio.door(V(7.5, 1.5, 3));
-  if (lift) lift.setGain(1, 1);
-  monster.despawn();
-  $('fade').style.opacity = 1;
-  setTimeout(() => {
-    if (document.pointerLockElement) document.exitPointerLock();
-    $('hud').classList.add('hidden');
-    $('end').classList.remove('hidden');
-    $('end-text').innerHTML = ENDING.map((l, i) => `<p style="animation-delay:${1 + i * 2.2}s">${l}</p>`).join('');
-    const mins = Math.floor(game.time / 60), secs = Math.floor(game.time % 60);
-    const found = Object.keys(game.flags.notes || {}).length;
-    $('end-stats').textContent = `КОНЕЦ · время ${mins}:${String(secs).padStart(2, '0')} · смертей: ${game.deaths} · записок: ${found} из ${NOTES.length}`;
-    // scratching on the cab roof
-    for (let i = 0; i < 12; i++)
-      setTimeout(() => {
-        audio.scratch(V(camera.position.x + (Math.random() - 0.5), camera.position.y + 1.4, camera.position.z + (Math.random() - 0.5)));
-      }, 9000 + i * 700 + Math.random() * 300);
-    setTimeout(() => audio.monsterCroak(V(camera.position.x, camera.position.y + 1.6, camera.position.z), 0.5), 15500);
-    setTimeout(() => lift && lift.setGain(0, 3), 18000);
-  }, 2000);
+  startCave(null,{pos:player.pos.clone().add(LIFT_OFFSET),yaw:player.yaw,pitch:player.pitch});
 }
 
 // ------------------------------------------------------------------ checkpoints & death
 function saveCheckpoint() {
+  if(chapter.active){saveCaveCheckpoint();return;}
   game.cpDeaths = 0;
   applyAssist();
   game.checkpoint = {
@@ -1172,8 +1195,9 @@ function applyAssist() {
   siege.assist = k;
 }
 
-function die() {
-  if (game.state === 'dying') return;
+function die(cause = 'monster') {
+  if (game.state !== 'play' && game.state !== 'note') return;
+  if (player.pitFall && cause !== 'pit') return;
   game.cpDeaths = (game.cpDeaths || 0) + 1;
   applyAssist();
   $('slits').classList.add('hidden');
@@ -1183,6 +1207,13 @@ function die() {
   game.deaths++;
   player.frozen = true;
   player.holding = false;
+  if (cause === 'pit') {
+    scare = { kind: 'pit', t: 0, baseFov: camera.fov, cut: false };
+    player.lookTarget = null;
+    audio.bodyFall(player.pos.clone(), player.level.floorAt(player.pos.x, player.pos.z));
+    echo.emit(player.pos.clone(), { radius: 8, speed: 20, strength: 1.3, decay: 1, color: COLORS.player });
+    return;
+  }
   monster.startScare(camera);
   scare = { t: 0, baseFov: camera.fov, cut: false };
   audio.scream();
@@ -1193,6 +1224,17 @@ function updateScare(dt) {
   if (!scare) return;
   scare.t += dt;
   const t = scare.t;
+  if (scare.kind === 'pit') {
+    camera.position.y += Math.sin(t * 55) * Math.max(0, 0.12 - t * 0.5);
+    if (t > 0.12 && !scare.cut) {
+      scare.cut = true;
+      audio.cut();
+      $('fade').style.transition = 'opacity .3s';
+      $('fade').style.opacity = 1;
+    }
+    if (t > 1.4) finishDeath('Ты упал в разлом. Держись каменных обходов по краям зала.');
+    return;
+  }
   player.lookTarget = (monster.mouthWorld || monster.headWorld).clone();
   // zoom punch into the face + violent shake
   camera.fov = THREE.MathUtils.lerp(camera.fov, t < 0.9 ? 46 : scare.baseFov, Math.min(1, dt * 18));
@@ -1216,21 +1258,26 @@ function updateScare(dt) {
     $('fade').style.opacity = 1;
   }
   if (t > 2.3) {
-    scare = null;
-    game.state = 'dead';
-    camera.fov = 80;
-    camera.updateProjectionMatrix();
-    fx.uniforms.uGlitch.value = 0;
-    $('tip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
-    $('death').classList.remove('hidden');
-    if (document.pointerLockElement) document.exitPointerLock();
-    audio.setMaster(0.15, 0.3);
+    finishDeath(TIPS[Math.floor(Math.random() * TIPS.length)]);
   }
+}
+
+function finishDeath(tip) {
+  scare = null;
+  game.state = 'dead';
+  camera.fov = 80;
+  camera.updateProjectionMatrix();
+  fx.uniforms.uGlitch.value = fx.uniforms.uWhite.value = 0;
+  $('tip').textContent = tip;
+  $('death').classList.remove('hidden');
+  if (document.pointerLockElement) document.exitPointerLock();
+  audio.setMaster(0.15, 0.3);
 }
 
 function loadSave() {
   try {
     const d = JSON.parse(localStorage.getItem('echo.save') || 'null');
+    if(d?.v===1&&d.chapter==='cave'&&d.cave?.sequence&&Number.isFinite(d.cave.pos?.x)&&Number.isFinite(d.cave.pos?.z))return d;
     if (!d || d.v !== 1 || d.taken.length !== level.items.length) return null;
     return {
       pos: V(d.pos.x, 0, d.pos.z), yaw: d.yaw, flags: d.flags, stones: d.stones, taken: d.taken,
@@ -1247,6 +1294,12 @@ const clearSave = () => {
 
 function restoreCheckpoint() {
   const c = game.checkpoint;
+  if(c?.chapter==='cave'){
+    scare=null;camera.fov=80;camera.updateProjectionMatrix();
+    fx.uniforms.uGlitch.value=fx.uniforms.uWhite.value=0;
+    $('death').classList.add('hidden');$('pause').classList.add('hidden');
+    audio.setMaster(+$('vol').value,1);startCave(c.cave);lock();return;
+  }
   cancelWork();
   resetObjective();
   timers.length = 0;
@@ -1380,6 +1433,8 @@ front.bind({
 $('again').addEventListener('click', () => { clearSave(); location.reload(); });
 
 let waterLoop = null;
+let requestedChapter=false;
+$('chapter-two').addEventListener('click',()=>{requestedChapter=true;boot(false);});
 function startGame(fromSave = false) {
   cancelWork();
   resetObjective();
@@ -1392,6 +1447,7 @@ function startGame(fromSave = false) {
   $('pause').classList.add('hidden');
   player.keys.clear();
   $('hud').classList.remove('hidden');
+  if(requestedChapter){requestedChapter=false;game.time=0;game.deaths=0;startCave();lock();return;}
   const saved = fromSave ? loadSave() : null;
   if (saved) {
     game.checkpoint = saved;
@@ -1562,15 +1618,15 @@ function updateListen(dt) {
 
 let groanT = 20;
 let loopT = 0;
-function updateAmbient(dt) {
+function updateAmbient(dt, world=level) {
   const cp = camera.position;
   // keep loop occlusion in sync as the listener moves
   loopT -= dt;
   if (loopT <= 0) {
     loopT = 0.25;
-    for (const l of [waterLoop, generator, lift]) if (l) l.update();
+    for (const l of [waterLoop, generator, lift,...(chapter.active?chapter.loops:[])]) if (l) l.update();
   }
-  for (const d of level.drips) {
+  for (const d of world.drips) {
     d.t -= dt;
     if (d.t <= 0) {
       d.t = d.int * (0.7 + Math.random() * 0.6);
@@ -1581,7 +1637,7 @@ function updateAmbient(dt) {
       }
     }
   }
-  for (const s of level.sparks) {
+  for (const s of world.sparks) {
     s.t -= dt;
     if (s.t <= 0) {
       s.t = s.int * (0.5 + Math.random());
@@ -1592,7 +1648,7 @@ function updateAmbient(dt) {
     }
   }
   // key items softly hum so they can be found
-  for (const it of level.items) {
+  for (const it of world.items) {
     if (it.taken || ['stone', 'locked', 'shutterA', 'shutterB', 'shutterC', 'seismo', 'locker', 'slam', 'clock', 'phone'].includes(it.type)) continue;
     it.hum = (it.hum ?? Math.random() * 4) - dt;
     if (it.hum <= 0) {
@@ -1603,7 +1659,7 @@ function updateAmbient(dt) {
   groanT -= dt;
   if (groanT <= 0) {
     groanT = 25 + Math.random() * 30;
-    const p = level.randomWalkable(player.pos, 30, 15);
+    const p = world.randomWalkable(player.pos, 30, 15);
     if (p) {
       p.y = 2;
       if (Math.random() < 0.7) audio.groan(p);
@@ -1611,7 +1667,7 @@ function updateAmbient(dt) {
     }
   }
   // machines
-  if (game.flags.powered) {
+  if (game.flags.powered&&world===level) {
     genPulseT -= dt;
     if (genPulseT <= 0) {
       genPulseT = 1.4;
@@ -1656,7 +1712,7 @@ function updateFear(dt) {
     for (let k = 0; k < 8; k++) {
       const a = (k / 8) * Math.PI * 2, dx = Math.cos(a), dz = Math.sin(a);
       let d = 0.25;
-      while (d < 8 && level.open(Math.floor(player.pos.x + dx * d), Math.floor(player.pos.z + dz * d))) d += 0.25;
+      while (d < 8 && player.level.open(Math.floor(player.pos.x + dx * d), Math.floor(player.pos.z + dz * d))) d += 0.25;
       sum += d;
     }
     roomK = THREE.MathUtils.clamp(sum / 8 / 3.6, 0.55, 1);
@@ -1882,6 +1938,19 @@ function tick(dt) {
   updateCrtParallax(dt);
   fx.uniforms.uTime.value += dt;
   const live = game.state === 'play' || game.state === 'note' || game.state === 'dying';
+  if(chapter.active&&live){
+    game.time+=dt;echo.update(dt);
+    if(game.state==='play')$('prompt').textContent=chapter.update(dt,camera);
+    player.update(dt,scene);camera.updateMatrixWorld(true);
+    if(player.pitFall?.impacted&&game.state==='play')die('pit');
+    vm.root.visible=game.state!=='dying'&&!player.pitFall&&!player.hidden;vm.update(dt,camera,player);
+    monster.update(dt,player,game);
+    if(game.state==='dying')updateScare(dt);
+    updateAmbient(dt,player.level);updateFear(dt);updateListen(dt);updateHint(dt);updateHUD();
+    updateTimers(dt);touchCd-=dt;
+    dust.material.uniforms.uCam.value.copy(camera.position);audio.setListener(camera);
+    return;
+  }
   if (live) {
     game.time += dt;
     echo.update(dt);
@@ -1893,6 +1962,9 @@ function tick(dt) {
     camera.updateMatrixWorld(true);
     updateItemAction(dt);
     updateHold(dt);
+    if(chapter.active){
+      camera.updateMatrixWorld(true);vm.update(dt,camera,player);audio.setListener(camera);return;
+    }
     if(!hold?.generator)generatorProps.sync(game.flags);
     vm.root.visible = game.state !== 'dying' && !player.hidden;
     vm.update(dt, camera, player);
@@ -1938,7 +2010,7 @@ frame();
 // debug handle
 window.__siege = siege;
 window.__game = {
-  game, player, monster, level, echo, audio, camera, menuCamera, vm, gtao, composer, extras, crtInterface, menuPerformance, menuBackground, menuComposer, generatorProps, roomVisibility,
+  game, player, monster, level, echo, audio, camera, menuCamera, vm, gtao, composer, extras, crtInterface, menuPerformance, menuBackground, menuComposer, generatorProps, roomVisibility, chapter, caveLevel, startCave,
   tick(n = 1, dt = 1 / 60) {
     for (let i = 0; i < n; i++) tick(dt);
   },
@@ -1955,6 +2027,7 @@ window.__game = {
 // Compact browser verification hooks; world coordinates: +X east, +Z south.
 window.render_game_to_text = () => JSON.stringify({
   screen: front.screen, mode: game.state,
+  chapter: chapter.active?{id:2,...chapter.sequence.snapshot(),assets:caveLevel.assetStats}:{id:1},
   loading: { label: $('load-label').textContent, progress: +$('load-progress').getAttribute('aria-valuenow') },
   menuBackground: menuReady ? 'live-3d-level' : 'loading',
   crtInterface: crtInterface.ready,
@@ -1965,7 +2038,7 @@ window.render_game_to_text = () => JSON.stringify({
   rendering: { ratio: composer.renderer.getPixelRatio(), visibleBatches: roomVisibility.stats.visible, totalBatches: roomVisibility.stats.total },
   objective: { text: lastObjective, visible: $('objective').classList.contains('visible') },
   audioReady: audio.ready, checkpoint: !!loadSave(),
-  player: { x: +player.pos.x.toFixed(2), z: +player.pos.z.toFixed(2), crouching: player.crouch, stones: player.stones, falling: player.fallT > 0, recovery: +player.fallT.toFixed(2), falls: player.falls },
+  player: { x: +player.pos.x.toFixed(2), y: +player.pos.y.toFixed(2), z: +player.pos.z.toFixed(2), crouching: player.crouch, stones: player.stones, falling: player.fallT > 0 || !!player.pitFall, pitFall: !!player.pitFall, recovery: +player.fallT.toFixed(2), falls: player.falls },
   psychosis: +game.psychosis.toFixed(2),
   cane: { streak: player.clickStreak, quietIn: +player.clickQuietT.toFixed(2) },
   hands: { leftVisible: vm.left.visible, pose: vm.leftHand.pose, contact: vm.contact?.type || null, point: vm.contact?.point.toArray(), normal: vm.contact?.normal.toArray() },
