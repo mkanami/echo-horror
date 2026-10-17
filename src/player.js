@@ -16,6 +16,7 @@ export class Player {
     this.yaw = 0;
     this.pitch = 0;
     this.keys = new Set();
+    this.touchMove = { x: 0, y: 0 };
     this.crouch = false;
     this.stamina = 1;
     this.breathCap = 1;
@@ -80,6 +81,7 @@ export class Player {
   }
 
   reset(pos, yaw) {
+    this.touchMove = { x: 0, y: 0 };
     this.braceContact = null;
     this.pos.set(pos.x, 0, pos.z);
     this.yaw = yaw;
@@ -174,6 +176,8 @@ export class Player {
     const k = this.keys;
     let mx = 0, mz = 0;
     if (!this.frozen && this.fallT <= 0) {
+      mx += this.touchMove?.x || 0;
+      mz += this.touchMove?.y || 0;
       if (k.has('KeyW') || k.has('ArrowUp')) mz -= 1;
       if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
       if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
@@ -181,12 +185,13 @@ export class Player {
     }
     this.listening = !this.frozen && this.fallT <= 0 && !this.hidden && k.has('KeyV');
     if (this.hidden || this.listening) mx = mz = 0;
+    const analog = Math.min(1, Math.hypot(mx, mz));
     const want = new THREE.Vector3(mx, 0, mz);
     this.moving = want.lengthSq() > 0;
     this.running = this.moving && (k.has('ShiftLeft') || k.has('ShiftRight')) && this.stamina > 0.05 && !this.crouch;
     if (this.moving) want.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
     const speed = this.crouch ? 1.25 : this.running ? 4.4 : 2.3;
-    this.vel.lerp(want.multiplyScalar(speed), Math.min(1, dt * 10));
+    this.vel.lerp(want.multiplyScalar(speed * analog), Math.min(1, dt * 10));
 
     const before = this.pos.clone();
     this.pos.addScaledVector(this.vel, dt);

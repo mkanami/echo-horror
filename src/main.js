@@ -20,6 +20,8 @@ import { front } from './frontend.js';
 import { createCrtInterface } from './crt-interface.js';
 import { GeneratorSequence, FUSE_ACTIONS } from './interaction-sequence.js';
 import { GeneratorProps } from './work-props.js';
+import { RoomVisibility } from './room-visibility.js';
+import { createTouchControls } from './touch-controls.js';
 
 const $ = (id) => document.getElementById(id);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -266,6 +268,9 @@ addEventListener('resize', () => {
 const audio = new AudioEngine();
 const level = new Level(scene);
 const generatorProps = new GeneratorProps(scene);
+const staticBatches=[];
+scene.traverse(o=>{if(o.userData.staticBatch)staticBatches.push(o);});
+const roomVisibility=new RoomVisibility(level,staticBatches);
 const dust = createDust();
 scene.add(dust);
 audio.occlusion = (pos) => level.occlusion(camera.position, pos);
@@ -499,6 +504,7 @@ document.addEventListener('pointerlockchange', () => {
 });
 
 function lock() {
+  if (touchControls?.enabled) return;
   try {
     const r = canvas.requestPointerLock();
     if (r && r.catch) r.catch(() => {});
@@ -1790,6 +1796,7 @@ function updateCachedBackground(menu, now) {
   const autoClear = renderer.autoClear;
   const start = performance.now();
   try {
+    roomVisibility.update(menu ? menuCamera : camera);
     setRelief(0);
     renderer.setRenderTarget(menuBackground);
     renderer.autoClear = true;
@@ -1811,6 +1818,7 @@ function updateCachedBackground(menu, now) {
   menuPerformance.lastWorldMs = performance.now() - start;
 }
 function renderView(menu) {
+  roomVisibility.update(menu ? menuCamera : camera);
   crtInterface.update(performance.now());
   fx.uniforms.uInterface.value = crtInterface.isMenu ? 1 : 0;
   const cached = menu || game.state === 'paused' || game.state === 'dead';
@@ -1866,6 +1874,7 @@ function frame() {
   const menu = game.state === 'menu';
   if (menu && menuReady) updateMenuBackground(rdt);
   if (!window.__freeze) tick(rdt);
+  touchControls.update();
   if (innerWidth > 0 && innerHeight > 0 && (!menu || menuReady || crtInterface.visible)) renderView(menu);
   menuWasActive = menu && menuReady;
 }
@@ -1917,13 +1926,19 @@ function tick(dt) {
     echo.update(dt);
   }
 }
+const touchControls=createTouchControls({
+  player,game,siege,pause,closeNote,
+  mapPoint: crtInterface.mapPoint,
+  look:(dx,dy)=>player.look(dx,dy,0.0035*sens),
+  throwItem:()=>{if(game.state!=='play'||vm.work||player.fallT>0)return;if(extras.held.length){if(extras.throwClock(camera))vm.throw('clock');}else{if(player.stones>0)vm.throw();player.throwStone(scene);}},
+});
 applyQuality(savedQ);
 frame();
 
 // debug handle
 window.__siege = siege;
 window.__game = {
-  game, player, monster, level, echo, audio, camera, menuCamera, vm, gtao, composer, extras, crtInterface, menuPerformance, menuBackground, menuComposer, generatorProps,
+  game, player, monster, level, echo, audio, camera, menuCamera, vm, gtao, composer, extras, crtInterface, menuPerformance, menuBackground, menuComposer, generatorProps, roomVisibility,
   tick(n = 1, dt = 1 / 60) {
     for (let i = 0; i < n; i++) tick(dt);
   },
@@ -1946,6 +1961,8 @@ window.render_game_to_text = () => JSON.stringify({
   crtParallax: { x: +fx.uniforms.uGlassOffset.value.x.toFixed(4), y: +fx.uniforms.uGlassOffset.value.y.toFixed(4) },
   interfaceLayer: crtInterface.layer,
   playerMeters: document.body.classList.contains('show-player-meters'),
+  touch: touchControls.enabled,
+  rendering: { ratio: composer.renderer.getPixelRatio(), visibleBatches: roomVisibility.stats.visible, totalBatches: roomVisibility.stats.total },
   objective: { text: lastObjective, visible: $('objective').classList.contains('visible') },
   audioReady: audio.ready, checkpoint: !!loadSave(),
   player: { x: +player.pos.x.toFixed(2), z: +player.pos.z.toFixed(2), crouching: player.crouch, stones: player.stones, falling: player.fallT > 0, recovery: +player.fallT.toFixed(2), falls: player.falls },

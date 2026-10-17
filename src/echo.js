@@ -166,6 +166,19 @@ const FRAG = /* glsl */ `
 
   void main() {
     pW = uLocal > 0.5 ? vO * uLocal : vW;
+    #ifdef SURFACE
+      // Opaque unlit pixels are exactly black. Avoid triplanar/POM/noise work
+      // there, retaining their depth so walls still occlude lit surfaces.
+      if (uLit <= 0.0 && uPat < 7.5) {
+        bool reached = false;
+        for (int i = 0; i < MAXP; i++) {
+          if (float(i) >= uN) break;
+          vec3 toPulse = uP[i].xyz - vW;
+          if (uQ[i].z > 0.0 && dot(toPulse, toPulse) <= uQ[i].x * uQ[i].x) { reached = true; break; }
+        }
+        if (!reached) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+      }
+    #endif
     vec3 n = normalize(vN);
     vec3 V = normalize(cameraPosition - vW);
     #ifdef SURFACE

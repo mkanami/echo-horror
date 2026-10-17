@@ -8,6 +8,7 @@ export function createCrtInterface(curvature) {
   const roots = [...menus, document.getElementById('note'), document.getElementById('hud')];
   const fade = document.getElementById('fade');
   const slits = document.getElementById('slits');
+  const touchControls = document.getElementById('touch-controls');
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 1;
   const scratch = document.createElement('canvas');
@@ -44,7 +45,7 @@ export function createCrtInterface(curvature) {
     return { element, image };
   });
   const observer = new MutationObserver(invalidate);
-  for (const root of [...roots, fade, slits]) observer.observe(root, {
+  for (const root of [...roots, fade, slits, touchControls]) observer.observe(root, {
     subtree: true, childList: true, characterData: true,
     attributes: true, attributeFilter: ['class', 'style', 'aria-valuenow'],
   });
@@ -298,6 +299,37 @@ export function createCrtInterface(curvature) {
       context.fillStyle = glow; context.fillRect(-15, -15, 30, 30);
       context.restore();
     }
+    paintTouchControls(context);
+  }
+
+  function paintTouchControls(ctx) {
+    if (touchControls.classList.contains('hidden')) return;
+    const stick=touchControls.querySelector('.touch-stick'),r=stick.getBoundingClientRect();
+    if(r.width){
+      const x=r.left+r.width/2,y=r.top+r.height/2,radius=r.width/2;
+      ctx.save();ctx.strokeStyle='#a5b4a95c';ctx.fillStyle='rgba(4,14,16,0.5)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.arc(x,y,radius,0,Math.PI*2);ctx.fill();ctx.stroke();
+      for(let i=0;i<12;i++){const a=i/12*Math.PI*2;ctx.beginPath();ctx.moveTo(x+Math.cos(a)*(radius-2),y+Math.sin(a)*(radius-2));ctx.lineTo(x+Math.cos(a)*(radius-7),y+Math.sin(a)*(radius-7));ctx.stroke();}
+      ctx.setLineDash([2,4]);ctx.beginPath();ctx.arc(x,y,radius*.7,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+      const thumb=touchControls.querySelector('.touch-thumb').getBoundingClientRect();
+      ctx.fillStyle='#b8b59d30';ctx.strokeStyle='#c5c8ae90';ctx.beginPath();ctx.arc(thumb.left+thumb.width/2,thumb.top+thumb.height/2,thumb.width/2,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();
+    }
+    for(const button of touchControls.querySelectorAll('button')){
+      const r=button.getBoundingClientRect();if(!r.width||!r.height)continue;
+      const selected=button.matches('.pressed,.selected'),style=getComputedStyle(button);
+      ctx.save();ctx.beginPath();ctx.moveTo(r.left,r.top);ctx.lineTo(r.right-7,r.top);ctx.lineTo(r.right,r.top+7);ctx.lineTo(r.right,r.bottom);ctx.lineTo(r.left+7,r.bottom);ctx.lineTo(r.left,r.bottom-7);ctx.closePath();
+      ctx.fillStyle=selected?'rgba(76,50,38,0.8)':button.matches('.touch-tap')?'rgba(21,42,46,0.72)':'rgba(4,13,16,0.68)';ctx.fill();
+      ctx.strokeStyle=selected?'#c79973aa':'#95ada35c';ctx.lineWidth=1;ctx.stroke();
+      ctx.fillStyle=selected?'#ecb181':'#bba88885';ctx.fillRect(r.left+6,r.top,selected?24:12,1);
+      const svg=button.querySelector('svg');
+      if(svg){const box=svg.getBoundingClientRect();ctx.save();ctx.translate(box.left,box.top);ctx.scale(box.width/24,box.height/24);ctx.strokeStyle=style.color;ctx.lineWidth=1.25;ctx.lineCap='round';ctx.lineJoin='round';ctx.stroke(new Path2D(svg.querySelector('path').getAttribute('d')));ctx.restore();}
+      const label=button.querySelector('span')||button,box=label.getBoundingClientRect(),ls=getComputedStyle(label);
+      if(box.width&&ls.display!=='none'){
+        ctx.font=`${ls.fontWeight} ${ls.fontSize} ${ls.fontFamily}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=style.color;
+        ctx.fillText(label.textContent,box.left+box.width/2,box.top+box.height/2);
+      }
+      ctx.restore();
+    }
   }
 
   function mappedPoint(event) {
@@ -361,6 +393,7 @@ export function createCrtInterface(curvature) {
 
   return {
     texture,
+    mapPoint: mappedPoint,
     get ready() { return ready; },
     get isMenu() { return isMenu(activeRoot()); },
     get layer() { return activeRoot()?.id || null; },

@@ -1,16 +1,15 @@
-// Accumulates static geometry (surfaces + edge lines) into merged meshes,
+// Accumulates static surfaces into spatially batched meshes,
 // and records XZ colliders for everything that blocks movement.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { echoPoints } from './echo.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { spatialBatches } from './render-batches.js';
 
-// rounded surface for realism, sharp box kept for the edge lines
+// Rounded surfaces retain the same silhouette without allocating disabled lines.
 function smoothBox(sx, sy, sz) {
   const m = Math.min(sx, sy, sz);
-  const sharp = new THREE.BoxGeometry(sx, sy, sz);
-  if (m < 0.03) return { geo: sharp, lineGeo: sharp };
-  return { geo: new RoundedBoxGeometry(sx, sy, sz, 2, Math.min(0.028, m * 0.22)), lineGeo: sharp };
+  if (m < 0.03) return { geo: new THREE.BoxGeometry(sx, sy, sz) };
+  return { geo: new RoundedBoxGeometry(sx, sy, sz, 2, Math.min(0.028, m * 0.22)) };
 }
 const cylSegs = (seg) => (seg <= 4 ? 6 : Math.max(seg, 22));
 
@@ -22,7 +21,6 @@ const _box = new THREE.Box3();
 export class Builder {
   constructor() {
     this.surfaces = {}; // key -> geometries
-    this.lines = {}; // key -> geometries
     this.colliders = [];
   }
 
@@ -35,11 +33,6 @@ export class Builder {
     g.deleteAttribute('uv');
     g.applyMatrix4(_m);
     if (render) (this.surfaces[key] ||= []).push(g);
-    if (edges && render) {
-      const eg = new THREE.EdgesGeometry(lineGeo || geo, edges);
-      eg.applyMatrix4(_m);
-      (this.lines[lineKey || key] ||= []).push(eg);
-    }
     if (!collide && render && !walk) {
       // anything solid-looking at body height blocks movement unless marked walk-through
       g.computeBoundingBox();
@@ -95,37 +88,33 @@ export class Builder {
   build(materials, lineMaterials) {
     const group = new THREE.Group();
     for (const k in this.surfaces) {
-      const g = mergeGeometries(this.surfaces[k], false);
-      g.computeBoundingSphere();
-      const mesh = new THREE.Mesh(g, materials[k] || materials.prop);
-      mesh.matrixAutoUpdate = false;
-      group.add(mesh);
-    }
-    for (const k in this.lines) {
-      const g = mergeGeometries(this.lines[k], false);
-      const lm = lineMaterials[k] || lineMaterials.prop;
-      const ls = new THREE.LineSegments(g, lm);
-      ls.matrixAutoUpdate = false;
-      group.add(ls);
-      const pts = echoPoints(g, { tint: lm.uniforms.uTint.value, boost: lm.uniforms.uBoost.value });
-      pts.matrixAutoUpdate = false;
-      group.add(pts);
+      for (const g of spatialBatches(this.surfaces[k])) {
+        const mesh = new THREE.Mesh(g, materials[k] || materials.prop);
+        mesh.matrixAutoUpdate = false;
+        mesh.userData.staticBatch = true;
+        group.add(mesh);
+      }
+      this.surfaces[k].forEach(g => g.dispose());
     }
     return group;
   }
 }
 
-// Build a single movable object (mesh + edges) – used for items and doors.
+// Bake same-material parts into one draw, retaining the movable parent group.
 export function makeObject(parts, material, lineMaterial) {
   const group = new THREE.Group();
+  const surfaces = [];
   for (const p of parts) {
     const mesh = new THREE.Mesh(p.geo, material);
     if (p.pos) mesh.position.set(...p.pos);
     if (p.rot) mesh.rotation.set(...p.rot);
     if (p.scale) mesh.scale.set(...p.scale);
-    const ls = new THREE.LineSegments(new THREE.EdgesGeometry(p.geo, 28), lineMaterial);
-    mesh.add(ls);
-    group.add(mesh);
+    mesh.updateMatrix();
+    const g = (p.geo.index ? p.geo.toNonIndexed() : p.geo.clone()).applyMatrix4(mesh.matrix);
+    surfaces.push(g);
   }
+  const g = mergeGeometries(surfaces,false);
+  surfaces.forEach(g=>g.dispose());
+  group.add(new THREE.Mesh(g,material));
   return group;
 }
