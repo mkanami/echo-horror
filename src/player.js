@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { FLOOR } from './level.js';
 import { COLORS } from './echo.js';
 import { findTripObstacle } from './trip-obstacle.js';
+import { PitFall } from './pit-fall.js';
 
 const SURF_MUL = { [FLOOR.TILE]: 1, [FLOOR.WATER]: 1.6, [FLOOR.GLASS]: 1.7, [FLOOR.METAL]: 1.3, [FLOOR.CARPET]: 0.65 };
 const FALL_DURATION = 2.1;
@@ -38,6 +39,7 @@ export class Player {
     this.running = false;
     this.lookTarget = null;
     this.clearFall();
+    this.pitFall = null;
     this.falls = 0;
   }
 
@@ -81,6 +83,7 @@ export class Player {
   }
 
   reset(pos, yaw) {
+    this.pitFall = null;
     this.touchMove = { x: 0, y: 0 };
     this.braceContact = null;
     this.pos.set(pos.x, 0, pos.z);
@@ -168,7 +171,22 @@ export class Player {
     this.audio.whoosh();
   }
 
+  updatePitFall(dt) {
+    const f = this.pitFall, drift = f.advance(dt);
+    // Keep the falling body inside the shaft instead of drifting through its lip.
+    const x = this.pos.x + drift.x, z = this.pos.z + drift.z;
+    if (this.level.isPit(x, z)) { this.pos.x = x; this.pos.z = z; }
+    this.pos.y = f.y;
+    this.vel.set(0, f.vy, 0);
+    this.camera.position.set(this.pos.x, this.eye + f.y, this.pos.z);
+    const pitch = THREE.MathUtils.lerp(this.pitch, -0.85, 1 - Math.exp(-f.time * 3));
+    this.camera.rotation.set(pitch, this.yaw, Math.sin(f.time * 7) * 0.08, 'YXZ');
+    this.headOffset?.set(0, 0, 0);
+    this.updateProjectiles(dt);
+  }
+
   update(dt, scene) {
+    if (this.pitFall) { this.updatePitFall(dt); return; }
     this.updateFall(dt);
     this.clickCd -= dt;
     this.clickQuietT = Math.max(0, this.clickQuietT - dt);
@@ -199,7 +217,18 @@ export class Player {
       const hit = findTripObstacle(this.level, before, this.pos);
       if (hit) this.trip(hit);
     }
-    if (!this.hidden) this.level.collide(this.pos, 0.3);
+    if (!this.hidden) (this.level.collidePlayer || this.level.collide).call(this.level, this.pos, 0.3);
+    if (!this.hidden && this.game.state === 'play' && this.level.isPit?.(this.pos.x, this.pos.z)) {
+      this.pitFall = new PitFall(this.vel.x, this.vel.z);
+      this.frozen = true;
+      this.holding = this.listening = this.running = this.moving = false;
+      this.lookTarget = null;
+      this.clearFall();
+      this.audio.gasp();
+      this.game.noise(this.pos.clone().setY(this.eye), { radius: 7, visual: 9, source: 'player', kind: 'gasp', color: COLORS.breath, strength: 0.7, speed: 13 });
+      this.updatePitFall(dt);
+      return;
+    }
     const moved = Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
     this.runDistance = this.running && this.fallT <= 0 ? this.runDistance + moved : 0;
 

@@ -268,6 +268,7 @@ export class Monster {
   spawn(pos, state = 'wander') {
     this.pos.copy(pos);
     this.pos.y = 0;
+    this.pitSafePosition = this.level.isPit ? this.pos.clone() : null;
     this.obj.visible = true;
     this.state = state;
     this.path = null;
@@ -446,12 +447,18 @@ export class Monster {
   }
 
   startWindup(playerPos) {
+    if(this.level.crossesPit?.(this.pos,playerPos)){
+      this.goTo(playerPos,'chase');this.repathT=.35;
+      this.chaseT=this.chaseT||0;this.lostT=0;
+      return false;
+    }
     this.setState('windup');
     this.lunge = { target: playerPos.clone(), t: 0, dir: new THREE.Vector3() };
     this.lunge.dir.set(playerPos.x - this.pos.x, 0, playerPos.z - this.pos.z).normalize();
     this.yaw = Math.atan2(this.lunge.dir.x, this.lunge.dir.z);
     this.audio.monsterHiss(this.headWorld, 1.1);
     echo.emit(this.headWorld, { radius: 3.5, speed: 6, strength: 1.4, decay: 0.6, color: COLORS.monster });
+    return true;
   }
 
   update(dt, player, game) {
@@ -588,9 +595,10 @@ export class Monster {
           break;
         }
         if (pd < 1.45 && reachable) {
-          this.startWindup(pp);
-          this.lunge.fast = true;
-          if (this.onChase) this.onChase(false);
+          if(this.startWindup(pp)){
+            this.lunge.fast = true;
+            if (this.onChase) this.onChase(false);
+          }
         }
         break;
       }
@@ -691,6 +699,8 @@ export class Monster {
     }
 
     if (this.state !== 'lunge') this.move(dt);
+    // Sniffing creeps without a path, so it needs the same edge guard as pursuit.
+    if(this.level.isPit)this.keepClear();
     this.animate(dt, player);
     this.sounds(dt, pd, player);
     if (this.voice) this.voice.setPos(this.headWorld);
@@ -767,7 +777,11 @@ export class Monster {
 
   // keep the feet off walls; the posture (see animate) keeps the rest inside
   keepClear() {
+    if(this.pitSafePosition&&this.level.crossesPit?.(this.pitSafePosition,this.pos))this.pos.copy(this.pitSafePosition);
     this.level.collide(this.pos, 0.3);
+    if(this.level.isPit&&!this.level.isPit(this.pos.x,this.pos.z)){
+      (this.pitSafePosition ||= new THREE.Vector3()).copy(this.pos);
+    }
   }
 
   sounds(dt, pd, player) {
@@ -813,12 +827,14 @@ export class Monster {
 
   kill(player) {
     if (this.state === 'kill') return;
+    if (player.pitFall || this.level.crossesPit?.(this.pos,player.pos)) return;
     this.setState('kill');
     this.path = null;
     // face the player, close in
     const dir = new THREE.Vector3(player.pos.x - this.pos.x, 0, player.pos.z - this.pos.z).normalize();
     this.yaw = Math.atan2(dir.x, dir.z);
     this.pos.set(player.pos.x - dir.x * 0.75, 0, player.pos.z - dir.z * 0.75);
+    if(this.level.isPit)this.keepClear();
     if (this.onKill) this.onKill();
   }
 
@@ -1022,6 +1038,7 @@ export class Monster {
       for (let it = 0; it < 2; it++) {
         this.pos.x += sc.cam.x + sc.f.x * d - this.headWorld.x;
         this.pos.z += sc.cam.z + sc.f.z * d - this.headWorld.z;
+        if(this.level.isPit)this.keepClear();
         b.hips.position.y += (sc.cam.y + 0.08 - this.headWorld.y) / 1.12;
         this.obj.position.copy(this.pos);
         this.obj.updateMatrixWorld(true);
