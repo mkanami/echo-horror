@@ -1062,6 +1062,8 @@ function restoreCheckpoint() {
   }
   echo.clear();
   game.fear = 0;
+  psyMem = 0;
+  psyFlare = 0;
   flash = 0;
   lastRoom = null;
   $('death').classList.add('hidden');
@@ -1367,7 +1369,18 @@ function updateFear(dt) {
   // barely there when calm, worse with fear, worst in a chase or when the air runs out
   const chaseK = monster.active && monster.state === 'chase' ? 1 : 0;
   const airK = player.holding ? THREE.MathUtils.smoothstep(1 - player.breathCap, 0.35, 0.95) : THREE.MathUtils.smoothstep(1 - player.breathCap, 0.6, 1.0) * 0.6;
-  const smearT = game.state === 'dying' ? 1 : Math.min(1, Math.max(chaseK, Math.min(1, game.fear) * 0.7, airK));
+  // aftershock: a chase leaves its mark. It fades over ~25 s, and while it lasts
+  // the psychosis keeps flaring back up for a second or two at random
+  if (chaseK) psyMem = 1;
+  else psyMem = Math.max(0, psyMem - dt / 25);
+  psyFlareT -= dt;
+  if (psyFlareT <= 0) {
+    psyFlareT = 3 + Math.random() * 5;
+    if (psyMem > 0.15 && !chaseK) psyFlare = 1;
+  }
+  psyFlare = Math.max(0, psyFlare - dt * 0.7);
+  const after = psyMem * 0.5 + psyFlare * psyMem * 0.45;
+  const smearT = game.state === 'dying' ? 1 : Math.min(1, Math.max(chaseK, Math.min(1, game.fear) * 0.7, airK, after));
   smear += (smearT - smear) * Math.min(1, dt * (smearT > smear ? 2.5 : 0.35)); // lingers after the danger passes
   // per-frame decay, so it looks the same at any frame rate
   afterimage.uniforms.damp.value = Math.pow(THREE.MathUtils.lerp(0.5, 0.92, smear), Math.max(0.25, dt * 60));
@@ -1377,6 +1390,7 @@ function updateFear(dt) {
   fx.uniforms.uSmear.value = smear;
 }
 let smear = 0;
+let psyMem = 0, psyFlare = 0, psyFlareT = 4;
 let eyeT = 0;
 const blurPrev = {};
 
