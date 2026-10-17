@@ -3,7 +3,8 @@
 // reaches out when you touch something. Lit by the same echo waves as the world.
 import * as THREE from 'three';
 import { echoMaterial } from './echo.js';
-import { taper, sculpt, blob, fbm } from './organic.js';
+import { taper } from './organic.js';
+import { handGeometry, GRIP_POINT } from './hands.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
@@ -17,30 +18,14 @@ function mesh(geo, mat, parent, pos = [0, 0, 0], rot = [0, 0, 0]) {
 }
 
 function hand(skin, sleeve, cuff, { left = false, open = false } = {}) {
-  const s = left ? -1 : 1;
   const g = new THREE.Group();
-  // forearm in a worn hospital-gown sleeve
-  mesh(taper([V(0, 0, 0.55), V(0, 0.01, 0.25), V(0, 0, 0)], [0.05, 0.046, 0.041], { radial: 16, tubular: 12, noise: 0.005, noiseScale: 12 }), sleeve, g);
-  mesh(taper([V(0, 0, 0.02), V(0, 0, -0.03)], 0.043, { radial: 16, tubular: 3 }), cuff, g);
+  // sleeve of a worn hospital gown: slightly baggy, with folds, rolled cuff
+  mesh(taper([V(0, 0.004, 0.62), V(0, 0.01, 0.32), V(0, 0.003, 0.05)], [0.05, 0.047, 0.04], { radial: 20, tubular: 18, noise: 0.007, noiseScale: 16 }), sleeve, g);
+  mesh(taper([V(0, 0.002, 0.075), V(0, 0.002, 0.035)], [0.043, 0.041], { radial: 20, tubular: 3, noise: 0.003, noiseScale: 30 }), cuff, g);
   const wrist = new THREE.Group();
-  wrist.position.set(0, 0, -0.04);
   g.add(wrist);
-  mesh(taper([V(0, 0, 0.03), V(0, 0, -0.03)], [0.034, 0.032], { radial: 14, tubular: 4 }), skin, wrist);
-  // palm and curled fingers around the cane grip
-  mesh(sculpt(blob(0.045, 18, 12), (v) => { v.x *= 1.05; v.y *= 0.55; v.z *= 1.2; v.x += fbm(v.x * 30, v.y * 30, v.z * 30, 2) * 0.002; }), skin, wrist, [0, 0, -0.08]);
-  for (let f = 0; f < 4; f++) {
-    const x = (f - 1.5) * 0.021 * s;
-    const len = 1 - Math.abs(f - 1.3) * 0.12;
-    // gripping fingers curl round the cane; an open hand reaches out, slightly spread and bent
-    const pts = open
-      ? [V(x, 0.0, -0.115), V(x * 1.15, 0.004, -0.115 - 0.045 * len), V(x * 1.3, -0.004, -0.115 - 0.085 * len), V(x * 1.4, -0.016, -0.115 - 0.11 * len)]
-      : [V(x, 0.01, -0.12), V(x, -0.025, -0.155), V(x, -0.055, -0.14), V(x * 0.9, -0.05, -0.11)];
-    mesh(taper(pts, [0.011, 0.0105, 0.0095, 0.008], { radial: 8, tubular: 10 }), skin, wrist);
-  }
-  const thumb = open
-    ? [V(-0.04 * s, -0.005, -0.06), V(-0.07 * s, -0.012, -0.09), V(-0.085 * s, -0.016, -0.12)]
-    : [V(-0.04 * s, 0, -0.06), V(-0.055 * s, -0.02, -0.1), V(-0.03 * s, -0.04, -0.13)];
-  mesh(taper(thumb, [0.013, 0.012, 0.009], { radial: 8, tubular: 8 }), skin, wrist);
+  const h = mesh(handGeometry(open ? 'open' : 'grip'), skin, wrist);
+  if (left) h.scale.x = -1;
   return { g, wrist };
 }
 
@@ -56,7 +41,10 @@ export class ViewModel {
     const red = echoMaterial({ map: 'plastic', scale: 4, boost: 0.9, tint: 0xb02018 });
     const grip = echoMaterial({ map: 'rubber', scale: 6, boost: 1.0 });
     this.mats = [skin, sleeve, cuff, white, red, grip];
-    for (const m of this.mats) m.uniforms.uLit.value = 0.1; // a faint sense of your own body
+    for (const m of this.mats) {
+      m.uniforms.uLit.value = 0.22; // a steady faint sense of your own body
+      m.uniforms.uLocal.value = 1; // patterns stick to the model, they don't swim
+    }
     white.uniforms.uLit.value = 0.35;
     red.uniforms.uLit.value = 0.3;
 
@@ -64,15 +52,17 @@ export class ViewModel {
     this.right = new THREE.Group();
     this.root.add(this.right);
     const R = hand(skin, sleeve, cuff);
-    R.g.rotation.set(0.6, -0.35, -0.85);
+    R.g.rotation.set(0, 0, 0);
     this.right.add(R.g);
+    this.gripMarker = new THREE.Object3D();
+    this.gripMarker.position.copy(GRIP_POINT);
+    R.wrist.add(this.gripMarker);
     // the cane lives in camera space and is aimed at a point on the floor ahead
     this.cane = new THREE.Group();
     this.root.add(this.cane);
     // grip, shaft with the red band near the tip, metal tip
     const L = 1.4;
-    mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.2, 14), grip, this.cane, [0, 0.02, 0]);
-    mesh(new THREE.TorusGeometry(0.03, 0.004, 6, 16), grip, this.cane, [0, 0.14, 0], [0, 0, 0]);
+    mesh(new THREE.CylinderGeometry(0.0145, 0.0145, 0.11, 14), grip, this.cane, [0, -0.01, 0]);
     const shaft = new THREE.Group();
 
     this.cane.add(shaft);
@@ -138,19 +128,31 @@ export class ViewModel {
     }
     const crouch = player.crouch ? 0.08 : 0;
     this.right.position.set(0.2 + this.sway.x * 0.5, -0.215 - bobY + this.sway.y * 0.4 + crouch * 0.5, -0.42);
-    this.right.rotation.set(-tapLift + this.sway.y * 0.6 + crouch * 1.5, sweep + this.sway.x * 1.2, -sweep * 0.25);
+    // orient the fist along the cane: the shaft leaves on the index-finger side,
+    // the forearm runs back to the lower-right corner of the view
+    {
+      const ap = this.right.position.clone().add(new THREE.Vector3(0, -0.03, -0.1));
+      const tip = new THREE.Vector3(-0.06 + sweep * 0.75 + this.sway.x * 0.6, -1.15 - crouch + tapLift * 1.3, -1.55);
+      const X = tip.sub(ap).normalize().negate();
+      const Z0 = new THREE.Vector3(0.45, -0.42 - this.sway.y, 0.78).normalize();
+      const Z = Z0.sub(X.clone().multiplyScalar(X.dot(Z0))).normalize();
+      const Y = new THREE.Vector3().crossVectors(Z, X);
+      this.right.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(X, Y, Z));
+    }
 
     // left hand: reaches out on interaction; while walking it is held ahead the way
     // blind people guard their face, and it flattens onto a wall when one is close
     if (this.leftT > 0) this.leftT = Math.max(0, this.leftT - dt);
     const reachK = this.leftT > 0 ? Math.sin((1 - this.leftT / 0.55) * Math.PI) : 0;
-    const guide = !player.running && !player.hidden && (walk > 0.15 || (this.wallDist ?? 9) < 0.8) ? 0.85 : 0;
+    const guide = !player.running && !player.hidden && (walk > 0.15 || (this.wallDist ?? 9) < 0.85) ? 0.85 : 0;
     this.guideK = THREE.MathUtils.lerp(this.guideK || 0, guide, Math.min(1, dt * 5));
-    const wall = (this.wallDist ?? 9) < 0.8;
-    this.touchK = THREE.MathUtils.lerp(this.touchK || 0, wall ? 1 : 0, Math.min(1, dt * 8));
+    const wd = this.wallDist ?? 9;
+    const wall = this.touching ? wd < 0.95 : wd < 0.75;
+    this.touchK = THREE.MathUtils.lerp(this.touchK || 0, wall ? 1 : 0, Math.min(1, dt * 5));
     const r = Math.max(reachK, this.guideK);
     // aim the cane from the grip in the right hand to a spot on the floor ahead
-    const grip = new THREE.Vector3(this.right.position.x - 0.025, this.right.position.y - 0.04, this.right.position.z - 0.12);
+    this.root.updateMatrixWorld(true);
+    const grip = this.root.worldToLocal(this.gripMarker.getWorldPosition(new THREE.Vector3()));
     const tipT = new THREE.Vector3(-0.06 + sweep * 0.75 + this.sway.x * 0.6, -1.15 - crouch + tapLift * 1.3, -1.55);
     const dir = tipT.sub(grip).normalize();
     this.cane.position.copy(grip);
@@ -159,8 +161,8 @@ export class ViewModel {
     if (wall && !this.touching && this.touchK > 0.6 && this.onTouch) this.onTouch(this.left.getWorldPosition(new THREE.Vector3()));
     this.touching = wall && this.touchK > 0.6;
     const tz = this.touchK * Math.max(0, Math.min(0.32, (this.wallDist ?? 0.8) - 0.38));
-    this.left.position.set(-0.24 + r * 0.04 + this.sway.x * 0.4, -0.55 + r * 0.37 + bobY * 1.5 + this.touchK * 0.05, -0.3 - r * 0.28 - tz);
-    this.left.rotation.set(0.42 - r * 0.12 - this.touchK * 0.45, 0.38 + this.sway.x, 0.55 - this.touchK * 0.35);
+    this.left.position.set(-0.22 + r * 0.03 + this.sway.x * 0.4, -0.6 + r * 0.31 + bobY * 1.5 + this.touchK * 0.03, -0.32 - r * 0.26 - tz);
+    this.left.rotation.set(1.12 + (1 - r) * 0.4 - this.touchK * 0.3, 0.32 + this.sway.x, 0.12 - this.touchK * 0.1);
     this.root.updateMatrixWorld(true);
   }
 }

@@ -9,7 +9,7 @@ import { fbm } from './organic.js';
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
 // ---------------------------------------------------------------- primitives
-function roundCone(a, b, r1, r2) {
+export function roundCone(a, b, r1, r2) {
   const ba = b.clone().sub(a);
   const l2 = ba.lengthSq();
   const box = new THREE.Box3().setFromPoints([a, b]).expandByScalar(Math.max(r1, r2));
@@ -24,7 +24,7 @@ function roundCone(a, b, r1, r2) {
     },
   };
 }
-function ellipsoid(c, r) {
+export function ellipsoid(c, r) {
   const box = new THREE.Box3(c.clone().sub(r), c.clone().add(r));
   return {
     box,
@@ -37,11 +37,11 @@ function ellipsoid(c, r) {
     },
   };
 }
-const smin = (a, b, k) => {
+export const smin = (a, b, k) => {
   const h = Math.max(k - Math.abs(a - b), 0) / k;
   return Math.min(a, b) - h * h * k * 0.25;
 };
-const smax = (a, b, k) => -smin(-a, -b, k);
+export const smax = (a, b, k) => -smin(-a, -b, k);
 
 // ---------------------------------------------------------------- skeleton
 function buildPrims(pose) {
@@ -140,7 +140,7 @@ function makeField(pose) {
 const CORNERS = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
 const EDGES = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
 
-function march(field, min, max, step) {
+export function march(field, min, max, step) {
   const nx = Math.ceil((max.x - min.x) / step) + 1;
   const ny = Math.ceil((max.y - min.y) / step) + 1;
   const nz = Math.ceil((max.z - min.z) / step) + 1;

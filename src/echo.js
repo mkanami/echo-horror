@@ -28,8 +28,12 @@ const VERT = /* glsl */ `
   varying vec3 vW;
   varying vec3 vN;
   varying vec2 vUv;
+  varying vec3 vO;
+  varying vec3 vNo;
   void main() {
     vUv = uv;
+    vO = position;
+    vNo = normal;
     vec4 w = modelMatrix * vec4(position, 1.0);
     vW = w.xyz;
     #ifdef SURFACE
@@ -64,6 +68,12 @@ const FRAG = /* glsl */ `
   varying vec3 vW;
   varying vec3 vN;
   varying vec2 vUv;
+  varying vec3 vO;
+  varying vec3 vNo;
+  uniform float uLocal;
+  // pattern space: world for the static level, the model's own space for things
+  // that move with you (hands), so textures don't swim across them
+  vec3 pW;
 
   float hash(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
@@ -82,7 +92,7 @@ const FRAG = /* glsl */ `
 
   // triplanar sample: returns albedo, writes perturbed normal + roughness
   vec3 tri(sampler2D T, sampler2D Nm, float sc, vec3 n, vec3 bw, inout vec3 N, inout float rough) {
-    vec2 uvX = vW.zy * sc, uvY = vW.xz * sc, uvZ = vW.xy * sc;
+    vec2 uvX = pW.zy * sc, uvY = pW.xz * sc, uvZ = pW.xy * sc;
     vec3 a = texture2D(T, uvX).rgb * bw.x + texture2D(T, uvY).rgb * bw.y + texture2D(T, uvZ).rgb * bw.z;
     vec4 nX = texture2D(Nm, uvX), nY = texture2D(Nm, uvY), nZ = texture2D(Nm, uvZ);
     vec2 tX = nX.xy * 2.0 - 1.0, tY = nY.xy * 2.0 - 1.0, tZ = nZ.xy * 2.0 - 1.0;
@@ -93,6 +103,7 @@ const FRAG = /* glsl */ `
   }
 
   void main() {
+    pW = uLocal > 0.5 ? vO * uLocal : vW;
     vec3 n = normalize(vN);
     vec3 V = normalize(cameraPosition - vW);
     #ifdef SURFACE
@@ -115,7 +126,8 @@ const FRAG = /* glsl */ `
       } else
       if (uPat < 4.5 || (uPat > 6.5 && uPat < 7.5)) {
         // triplanar photo material (pat 7: two-tone wall, lower part uses map 2)
-        vec3 bw = pow(abs(n), vec3(4.0));
+        vec3 nb = uLocal > 0.5 ? normalize(vNo) : n;
+        vec3 bw = pow(abs(nb), vec3(4.0));
         bw /= (bw.x + bw.y + bw.z);
         albedo = tri(uTex, uNrm, uScale, n, bw, N, rough);
         if (uPat > 6.5) {
@@ -148,14 +160,14 @@ const FRAG = /* glsl */ `
         }
       } else if (uPat < 5.5) {
         // flesh: clammy, mottled, wet skin with veins
-        float m = fbm(vW * 9.0);
-        float veins = smoothstep(0.03, 0.0, abs(fbm(vW * 4.0 + 3.1) - 0.5)) * 0.6;
+        float m = fbm(pW * 9.0);
+        float veins = smoothstep(0.03, 0.0, abs(fbm(pW * 4.0 + 3.1) - 0.5)) * 0.6;
         albedo = mix(vec3(0.16, 0.13, 0.12), vec3(0.34, 0.29, 0.27), m) * (1.0 - veins * 0.7);
         float e = 0.01;
-        float h0 = fbm(vW * 26.0);
-        vec3 grad = vec3(fbm((vW + vec3(e, 0, 0)) * 26.0) - h0, fbm((vW + vec3(0, e, 0)) * 26.0) - h0, fbm((vW + vec3(0, 0, e)) * 26.0) - h0) / e;
+        float h0 = fbm(pW * 26.0);
+        vec3 grad = vec3(fbm((pW + vec3(e, 0, 0)) * 26.0) - h0, fbm((pW + vec3(0, e, 0)) * 26.0) - h0, fbm((pW + vec3(0, 0, e)) * 26.0) - h0) / e;
         N = normalize(n - (grad - dot(grad, n) * n) * 0.02 * uBump);
-        rough = mix(0.75, 0.3, uWet * smoothstep(0.35, 0.7, fbm(vW * 5.0 + 7.0)));
+        rough = mix(0.75, 0.3, uWet * smoothstep(0.35, 0.7, fbm(pW * 5.0 + 7.0)));
       } else {
         // glass
         albedo = vec3(0.03);
@@ -252,6 +264,7 @@ export function echoMaterial({ kind = 'surface', tint = 0xffffff, boost = 1, pat
       uBoost: { value: boost },
       uPat: { value: pat },
       uLit: { value: 0 },
+      uLocal: { value: 0 },
       uTex: { value: surface ? tex(map, true) : null },
       uNrm: { value: surface ? tex(map, false) : null },
       uScale: { value: scale },

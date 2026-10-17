@@ -36,10 +36,11 @@ const vm = new ViewModel();
 const vmPass = new RenderPass(vm.scene, camera);
 vmPass.clear = false;
 vmPass.clearDepth = true;
-composer.addPass(vmPass);
-// the implant lags: images linger and smear as they fade
+// the implant lags: images linger and smear as they fade (the world only —
+// your own hands are drawn after it and stay crisp)
 const afterimage = new AfterimagePass(0.74);
 composer.addPass(afterimage);
+composer.addPass(vmPass);
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.38, 0.6, 0.18);
 composer.addPass(bloom);
 const fx = new ShaderPass({
