@@ -47,6 +47,7 @@ const SURF = {
   'Переход': { wall: 'w_hosp', floor: 'f_terrazzo', ceil: 'c_plaster' },
   'Лифтовый холл': { wall: 'w_hosp', floor: 'f_terrazzo', ceil: 'c_office' },
   'Лифт': { wall: 'w_plates', floor: 'f_dplate', ceil: 'c_concrete' },
+  'Вентканал': { wall: 'w_plates', floor: 'f_grate', ceil: 'c_concrete' },
 };
 
 export class Level {
@@ -107,6 +108,8 @@ export class Level {
     this.carve(13, 7, 9, 3, F.TILE, 2.8, 'Переход');
     this.carve(4, 3, 9, 10, F.TILE, 3.5, 'Лифтовый холл');
     this.carve(6, 0, 3, 3, F.METAL, 2.6, 'Лифт');
+    // a crawl-only ventilation duct: morgue <-> flooded corridor, too low for the creature
+    this.carve(41, 29, 1, 7, F.METAL, 1.25, 'Вентканал');
     // puddles in the morgue and corridor B
     for (const [i, j] of [[31, 41], [32, 41], [31, 42], [38, 39], [39, 39], [38, 40]]) this.cells[j * W + i] = F.WATER;
     // broken glass spilling into the airlock
@@ -345,7 +348,7 @@ export class Level {
     const IND = ['Затопленный коридор', 'Служебный коридор', 'Генераторная', 'Шлюз', 'Безэховый блок'];
     for (const r of this.wallRuns) {
       const len = r.b - r.a;
-      if (len < 1.6) continue;
+      if (len < 1.6 || r.h < 2) continue;
       const ci = r.ax === 'x' ? Math.floor((r.a + r.b) / 2) : r.n > 0 ? r.at : r.at - 1;
       const cj = r.ax === 'x' ? (r.n > 0 ? r.at : r.at - 1) : Math.floor((r.a + r.b) / 2);
       const rm = this.room[cj * W + ci];
@@ -535,7 +538,7 @@ export class Level {
     B.cyl(49.6, 2.13, 26.6, 0.09, 0.07, 0.05, 18, { key: 'rust', collide: false });
     // a ceiling panel that came down and now floats in the water
     B.box(44.0, 0.03, 27.6, 1.0, 0.03, 0.9, { rot: [0.04, 0.5, 0.03], collide: false, key: 'c_office' });
-    P.barrel(B.at(42.0, 0, 28.3), { fallen: true });
+    P.barrel(B.at(43.6, 0, 28.3), { fallen: true });
     P.crate(B.at(47.5, 0, 26.6), 0.7, { ry: 0.6 });
     // torn cable running down the wall into the water (it sparks)
     B.cyl(50.4, 1.2, 28.95, 0.015, 0.015, 2.3, 6, { key: 'rubber', collide: false, walk: true });
@@ -646,6 +649,7 @@ export class Level {
     for (const rm of ROOMS) {
       const ci = Math.floor(rm.x + rm.w / 2), cj = Math.floor(rm.z + rm.h / 2);
       const hgt = this.ceil[cj * W + ci];
+      if (hgt < 2) continue;
       const kind = (SURF[rm.name] || H_).ceil;
       const x0 = rm.x, x1 = rm.x + rm.w, z0 = rm.z, z1 = rm.z + rm.h;
       const alongX = rm.w >= rm.h;
@@ -719,6 +723,19 @@ export class Level {
     B.box(6.5, 1.25, 12.95, 0.3, 0.4, 0.06, { collide: false, key: 'paint' });
     P.sign(B.at(12.96, 1.62, 6.4, -Math.PI / 2), 0.3, 0.1);
     P.sign(B.at(6.5, 1.57, 12.96, Math.PI), 0.3, 0.1);
+
+    // ===== the dead from the orderly's log: palms pressed over their mouths
+    P.corpse(B.at(0, 0, 0), 22.4, 0.0, 27.7, { pose: 'mouth', ry: 1.45 });
+    P.corpse(B.at(0, 0, 0), 47.1, -0.04, 27.85, { pose: 'mouth', ry: 0.35 });
+    P.corpse(B.at(0, 0, 0), 8.7, 0.0, 29.4, { pose: 'mouth', ry: -0.2 });
+
+    // ===== duct mouths: torn-off grilles
+    for (const [z, nz] of [[29.0, -1], [36.0, 1]]) {
+      for (const x of [41.0, 42.0]) B.box(x, 0.62, z, 0.06, 1.25, 0.08, { collide: false, key: 'iron' });
+      B.box(41.5, 1.22, z, 1.06, 0.06, 0.08, { collide: false, walk: true, key: 'iron' });
+    }
+    B.box(42.6, 0.02, 28.6, 0.9, 0.03, 1.1, { collide: false, walk: true, key: 'iron', rot: [0, 0.3, 0] });
+    for (let k = 0; k < 6; k++) B.box(42.6 + Math.cos(0.3) * (k - 2.5) * 0.15, 0.04, 28.6 - Math.sin(0.3) * (k - 2.5) * 0.15, 0.02, 0.02, 1.0, { collide: false, walk: true, key: 'rust', rot: [0, 0.3, 0], edges: 0 });
 
     // ===== extra dressing (second pass)
     const R = Math.PI;
@@ -833,6 +850,7 @@ export class Level {
       const cj = r.ax === 'x' ? (r.n > 0 ? r.at : r.at - 1) : Math.floor((r.a + r.b) / 2);
       const rm = this.room[cj * W + ci];
       const name = rm >= 0 ? ROOMS[rm].name : '';
+      if (r.h < 2) continue;
       const ind = ['Затопленный коридор', 'Служебный коридор', 'Генераторная', 'Шлюз', 'Безэховый блок', 'Лифт'].includes(name);
       const n = Math.max(1, Math.round(len / 2.2));
       for (let k = 0; k < n; k++) {
@@ -1122,7 +1140,7 @@ export class Level {
       for (let j = 0; j < NH; j++)
         for (let i = 0; i < NW; i++) {
           const x = (i + 0.5) * S, z = (j + 0.5) * S;
-          g[j * NW + i] = this.open(Math.floor(x), Math.floor(z)) && !this.blockedPoint(x, z, 0.3) ? 1 : 0;
+          g[j * NW + i] = this.open(Math.floor(x), Math.floor(z)) && this.ceil[Math.floor(z) * W + Math.floor(x)] >= 1.7 && !this.blockedPoint(x, z, 0.3) ? 1 : 0;
         }
       return g;
     };

@@ -325,6 +325,21 @@ class EchoSystem {
   clear() {
     for (let i = 0; i < MAXP; i++) shared.uQ.value[i].z = 0;
   }
+
+  // how strongly a point is lit right now by any wave (0..~1)
+  litAt(pos) {
+    let best = 0;
+    for (let i = 0; i < MAXP; i++) {
+      const q = shared.uQ.value[i], p = shared.uP.value[i];
+      if (q.z <= 0) continue;
+      const age = this.time - p.w;
+      const d = Math.hypot(pos.x - p.x, pos.y - p.y, pos.z - p.z);
+      if (d > q.x || age * q.y < d) continue;
+      const v = Math.exp(-(age - d / q.y) * q.w) * (1 - d / q.x) * q.z;
+      if (v > best) best = v;
+    }
+    return best;
+  }
 }
 
 export const echo = new EchoSystem();

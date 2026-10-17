@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { AfterimagePass } from 'three/examples/jsm/postprocessing/AfterimagePass.js';
 import { echo, COLORS, createDust } from './echo.js';
 import { AudioEngine } from './audio.js';
 import { Level } from './level.js';
@@ -36,6 +37,9 @@ const vmPass = new RenderPass(vm.scene, camera);
 vmPass.clear = false;
 vmPass.clearDepth = true;
 composer.addPass(vmPass);
+// the implant lags: images linger and smear as they fade
+const afterimage = new AfterimagePass(0.74);
+composer.addPass(afterimage);
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.38, 0.6, 0.18);
 composer.addPass(bloom);
 const fx = new ShaderPass({
@@ -54,7 +58,7 @@ const fx = new ShaderPass({
     float rand(vec2 c){ return fract(sin(dot(c, vec2(12.9898,78.233))) * 43758.5453); }
     void main(){
       vec2 c = vUv - 0.5;
-      vec2 uv = vUv + c * dot(c,c) * uFear * 0.12;
+      vec2 uv = vUv + c * dot(c,c) * (0.07 + uFear * 0.12);
       uv.x += sin(uv.y * 40.0 + uTime * 30.0) * 0.0015 * uFear * uFear;
       float band = floor(uv.y * 34.0) + floor(uTime * 24.0) * 7.0;
       uv.x += (rand(vec2(band, 1.0)) - 0.5) * 0.12 * uGlitch * step(0.62, rand(vec2(band, 2.0)));
@@ -63,7 +67,14 @@ const fx = new ShaderPass({
       vec3 col = vec3(texture2D(tDiffuse, uv + c*ab).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - c*ab).b);
       float vig = smoothstep(0.9, 0.18, length(c) * (1.0 + uFear * 0.6));
       col *= vig;
-      col += (rand(vUv * uRes + fract(uTime * 7.13)) - 0.5) * (0.03 + uFear * 0.05);
+      // implant feed: coarse grain, a rolling interference band, quantised levels
+      float gr = rand(floor(vUv * uRes * 0.5) + fract(uTime * 7.13)) - 0.5;
+      col += gr * (0.038 + uFear * 0.05);
+      float bandY = fract(uTime * 0.05 + rand(vec2(floor(uTime * 0.5), 9.0)) * 0.3);
+      float inBand = smoothstep(0.02, 0.0, abs(vUv.y - bandY));
+      col += inBand * (rand(vec2(vUv.y * 300.0, uTime)) - 0.5) * 0.08;
+      col *= 1.0 - inBand * 0.25;
+      col = floor(col * 36.0 + rand(vUv * uRes + uTime) * 0.9) / 36.0;
       // grade: drained, cold, crushed blacks, like a damaged night-vision feed
       float gl = dot(col, vec3(0.3, 0.55, 0.15));
       // blood keeps its colour while everything else is drained
@@ -139,6 +150,14 @@ function updateTimers(dt) {
 
 const player = new Player(camera, level, audio, game);
 player.vm = vm;
+let touchCd = 0;
+vm.onTouch = (p) => {
+  if (touchCd > 0) return;
+  touchCd = 1.2;
+  // palm on cold plaster: a soft slap you can almost see
+  audio.play('flesh', p, { gain: 0.2, rate: 1.9, wet: 0.2, vary: 0.1 });
+  echo.emit(p, { radius: 1.3, speed: 4, strength: 0.7, decay: 1.4, color: COLORS.player });
+};
 const monster = new Monster(scene, level, audio);
 monster.onKill = () => die();
 
@@ -221,7 +240,7 @@ addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (game.state === 'play') {
     if (e.code === 'KeyF') player.click();
-    if (e.code === 'KeyC') player.crouch = !player.crouch;
+    if (e.code === 'KeyC' && !(player.crouch && level.ceilAt(Math.floor(player.pos.x), Math.floor(player.pos.z)) < 1.7)) player.crouch = !player.crouch;
     if (e.code === 'KeyE') interact();
     if (siege && siege.active && ['Digit1', 'Digit2', 'Digit3'].includes(e.code)) {
       $('brief').classList.add('hidden');
@@ -275,14 +294,15 @@ $('sens').addEventListener('input', (e) => (sens = +e.target.value));
 
 // ---- graphics quality
 const QUALITY = {
-  high: { pr: 1.5, smaa: true, dust: true, bloom: true },
-  mid: { pr: 1.0, smaa: true, dust: true, bloom: true },
-  low: { pr: 0.75, smaa: false, dust: false, bloom: false },
+  high: { pr: 1.0, smaa: true, dust: true, bloom: true },
+  mid: { pr: 0.75, smaa: true, dust: true, bloom: true },
+  low: { pr: 0.6, smaa: false, dust: false, bloom: false },
 };
 function applyQuality(q) {
   const Q = QUALITY[q] || QUALITY.high;
-  renderer.setPixelRatio(Math.min(devicePixelRatio, Q.pr));
-  composer.setPixelRatio ? composer.setPixelRatio(Math.min(devicePixelRatio, Q.pr)) : null;
+  // a deliberately coarse, crisp-pixel feed
+  renderer.setPixelRatio(Q.pr);
+  composer.setPixelRatio ? composer.setPixelRatio(Q.pr) : null;
   composer.setSize(innerWidth, innerHeight);
   smaa.enabled = Q.smaa;
   bloom.enabled = Q.bloom;
@@ -369,7 +389,7 @@ function updateHUD() {
   sm.querySelector('i').style.width = `${player.stamina * 100}%`;
   sm.style.opacity = player.stamina < 0.99 ? 1 : 0.25;
   $('stones').textContent = player.stones ? `КАМНИ: ${player.stones}` : '';
-  $('stance').textContent = player.holding ? 'НЕ ДЫШИШЬ' : player.crouch ? 'КРАДЁШЬСЯ' : '';
+  $('stance').textContent = player.listening ? 'ВСЛУШИВАЕШЬСЯ' : player.holding ? 'НЕ ДЫШИШЬ' : player.hidden ? 'В ШКАФЧИКЕ' : player.crouch ? 'КРАДЁШЬСЯ' : '';
 }
 
 // ------------------------------------------------------------------ interaction
@@ -623,6 +643,7 @@ function onEnterRoom(name) {
     game.hint('Вода. Каждый шаг слышно вдвое дальше.');
   }
   if (name === 'Безэховый блок') game.hint('Боксы. Второй открыт изнутри.');
+  if (name === 'Вентканал') game.hint('Вентканал. Только ползком — зато оно сюда не пролезет.', 5);
 }
 
 function releaseMonster() {
@@ -636,6 +657,7 @@ function releaseMonster() {
     monster.goTo(V(14, 0, 27.5), 'investigate');
     game.hint('В атриуме что-то сорвалось с вентиляции. Тяжёлое. Живое.', 6);
     later(6.0, () => game.hint('Оно знает только звук. Подойдёт — замри и не дыши [Q].', 5));
+    later(12.0, () => game.hint('[V] — вслушаться: замри и услышь, откуда оно идёт.', 5));
     saveCheckpoint();
   });
 }
@@ -948,6 +970,84 @@ function startGame(fromSave = false) {
 }
 
 // ------------------------------------------------------------------ ambient world
+let sightCd = 0, sightT = 0, glitchT = 0;
+let stalkT = 75;
+let drone = null;
+function updateDread(dt) {
+  // catching sight of it: lit by your own echo, in view, nothing in between
+  sightCd -= dt;
+  sightT -= dt;
+  glitchT = Math.max(0, glitchT - dt);
+  if (monster.active && sightCd <= 0 && sightT <= 0 && !siege.active) {
+    sightT = 0.25;
+    const hp = monster.headWorld;
+    const d = hp.distanceTo(camera.position);
+    if (d < 11 && echo.litAt(hp) > 0.22) {
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      const to = hp.clone().sub(camera.position).normalize();
+      if (dir.dot(to) > 0.8 && level.occlusion(camera.position, hp) < 0.35) {
+        sightCd = 25;
+        glitchT = 0.4;
+        audio.stinger('high', 0.75);
+        player.shake = Math.max(player.shake || 0, 0.7);
+        game.fear = Math.min(1.5, game.fear + 0.5);
+      }
+    }
+  }
+  // footsteps behind you, when it is nowhere near
+  stalkT -= dt;
+  if (stalkT <= 0 && !siege.active) {
+    stalkT = 70 + Math.random() * 60;
+    const far = !monster.active || monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z)) > 20;
+    if (far) {
+      const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+      for (let i = 0; i < 4; i++)
+        later(i * 0.75, () => {
+          const p = V(player.pos.x + fx * (7 - i * 0.6), 0.2, player.pos.z + fz * (7 - i * 0.6));
+          audio.play('flesh', p, { gain: 0.35, rate: 0.66, wet: 0.7, vary: 0.05 });
+          audio.play('tick', p, { gain: 0.12, rate: 1.7, wet: 0.5, delay: 0.04 });
+        });
+    }
+  }
+  // a low pressure in the ears as it gets close
+  if (audio.ready) {
+    if (!drone) {
+      drone = audio.createLoop('amb_hell', camera.position, 0.5, { ref: 1, roll: 0 });
+      drone.setGain(0, 0.1);
+    }
+    drone.setPos(camera.position);
+    drone.setGain(Math.min(1, Math.max(0, game.fear - 0.25)) * 0.9, 0.6);
+  }
+}
+
+// hold V: stand still and listen. The world hushes and you can tell where it is.
+let listenK = 0;
+function updateListen(dt) {
+  const on = player.listening && game.state === 'play';
+  listenK = THREE.MathUtils.lerp(listenK, on ? 1 : 0, Math.min(1, dt * 5));
+  $('listen').classList.toggle('hidden', listenK < 0.05);
+  if (audio.ready && !audio.muted && game.state === 'play') audio.master.gain.setTargetAtTime(+$('vol').value * (1 + listenK * 0.35), audio.t, 0.2);
+  let src = null, loud = 0;
+  if (siege.active) {
+    const n = siege.cur();
+    src = n.ear || n.pos;
+    loud = 0.4 + n.loud * 0.5;
+  } else if (monster.active) {
+    src = monster.pos;
+    const d = monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z));
+    loud = Math.max(0, 1 - d / 30) * ((monster.curSpeed || 0) > 0.1 ? 1 : 0.45);
+  }
+  const mark = $('listen-mark');
+  if (src && listenK > 0.05) {
+    // angle relative to where you face (screen up = straight ahead)
+    const a = Math.atan2(src.x - player.pos.x, src.z - player.pos.z) - Math.atan2(-Math.sin(player.yaw), -Math.cos(player.yaw));
+    const r = 140;
+    mark.style.transform = `translate(${Math.sin(a) * r}px, ${-Math.cos(a) * r}px) rotate(${a}rad)`;
+    mark.style.opacity = (loud * listenK).toFixed(2);
+  } else mark.style.opacity = 0;
+}
+
 let groanT = 20;
 let loopT = 0;
 function updateAmbient(dt) {
@@ -1033,10 +1133,11 @@ function updateFear(dt) {
     audio.heartbeat(Math.min(1, game.fear));
   }
   if (heartT <= 0) heartT = 0.5;
-  if (audio.ctx) audio.setAmbience(0.12 * (1 - Math.min(1, game.fear) * 0.6));
+  if (audio.ctx) audio.setAmbience(0.12 * (1 - Math.min(1, game.fear) * 0.6) * (1 - listenK * 0.8));
   flash = Math.max(0, flash - dt * 0.8);
   fx.uniforms.uFear.value = Math.min(1.2, game.fear * 0.8 + (player.holding ? 0.15 : 0));
   fx.uniforms.uFlash.value = flash;
+  if (game.state !== 'dying') fx.uniforms.uGlitch.value = glitchT > 0 ? 0.55 : 0;
 }
 
 // ------------------------------------------------------------------ loop
@@ -1055,14 +1156,29 @@ function tick(dt) {
     echo.update(dt);
     player.update(dt, scene);
     vm.root.visible = game.state !== 'dying' && !player.hidden;
+    // how far is the wall straight ahead (for the guiding hand)
+    {
+      const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+      vm.wallDist = 9;
+      for (const d of [0.35, 0.5, 0.65, 0.8]) {
+        const x = player.pos.x + fx * d, z = player.pos.z + fz * d;
+        if (!level.open(Math.floor(x), Math.floor(z)) || level.blockedPoint(x, z, 0.05)) {
+          vm.wallDist = d;
+          break;
+        }
+      }
+    }
     vm.update(dt, camera, player);
     monster.update(dt, player, game);
     if (game.state === 'dying') updateScare(dt);
     level.updateDoors(dt);
     updateAmbient(dt);
     updateFear(dt);
+    updateDread(dt);
+    updateListen(dt);
     updateTimers(dt);
     updateHold(dt);
+    touchCd -= dt;
     if (siege.active) siege.update(dt);
     if (radarT > 0) {
       radarT -= dt;

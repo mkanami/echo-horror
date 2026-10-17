@@ -148,14 +148,14 @@ export function gurney(L, { body = true, bag = false } = {}) {
 }
 
 // sheet: body on a slab under a sheet pulled to the chest, one arm hanging off
-export function corpse(L, x, y, z, { bag = false, ry = 0, sheet = false } = {}) {
+export function corpse(L, x, y, z, { bag = false, ry = 0, sheet = false, pose = null } = {}) {
   const o = { collide: false, rot: [0, ry, 0], edges: 40 };
   if (bag) {
     const { field } = bodyGeometry('supine');
     L.geo(drapeGeometry(field, { bag: true, x0: -0.44, x1: 0.44, z0: -0.93, z1: 1.0, seed: x + z }), x, y, z, { ...o, key: 'rubber' });
     return;
   }
-  const { g, field } = bodyGeometry(sheet ? 'hang' : 'supine');
+  const { g, field } = bodyGeometry(pose || (sheet ? 'hang' : 'supine'));
   L.geo(g, x, y, z, { ...o, key: 'flesh' });
   if (sheet) L.geo(drapeGeometry(field, { seed: x * 3 + z }), x, y, z, { ...o, key: 'cloth' });
 }

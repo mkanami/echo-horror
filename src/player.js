@@ -95,7 +95,7 @@ export class Player {
       p = this.vm.tipWorld();
       p.y = Math.max(0.05, p.y);
     }
-    this.game.noise(p, { radius: 5, visual: 15, source: 'player', kind: 'click', color: COLORS.click, speed: 13, strength: 1.1, decay: 0.55 });
+    this.game.noise(p, { radius: 5, visual: 10, source: 'player', kind: 'click', color: COLORS.click, speed: 13, strength: 1.1, decay: 0.55 });
   }
 
   throwStone(scene) {
@@ -120,7 +120,8 @@ export class Player {
       if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
       if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
     }
-    if (this.hidden) mx = mz = 0;
+    this.listening = !this.frozen && !this.hidden && k.has('KeyV');
+    if (this.hidden || this.listening) mx = mz = 0;
     const want = new THREE.Vector3(mx, 0, mz);
     this.moving = want.lengthSq() > 0;
     this.running = this.moving && (k.has('ShiftLeft') || k.has('ShiftRight')) && this.stamina > 0.05 && !this.crouch;
@@ -189,23 +190,43 @@ export class Player {
       }
     }
 
-    // camera
+    // camera: a body, not a dolly. Spring-damped head that takes a kick on
+    // every footfall, sways with breathing, and shakes when something heavy walks near.
+    const lowCeil = this.level.ceilAt(Math.floor(this.pos.x), Math.floor(this.pos.z)) < 1.7;
+    if (lowCeil) this.crouch = true;
     const targetEye = this.crouch ? 1.0 : 1.65;
-    this.eye += (targetEye - this.eye) * Math.min(1, dt * 8);
+    this.eye += (targetEye - this.eye) * Math.min(1, dt * 7);
     const sp = Math.hypot(this.vel.x, this.vel.z);
-    this.bob += dt * sp * 4.2;
-    const bobY = Math.sin(this.bob) * 0.035 * Math.min(1, sp / 2);
-    const bobX = Math.cos(this.bob * 0.5) * 0.025 * Math.min(1, sp / 2);
-    this.camera.position.set(this.pos.x, this.eye + bobY, this.pos.z);
-    this.camera.position.x += Math.cos(this.yaw) * bobX;
-    this.camera.position.z -= Math.sin(this.yaw) * bobX;
-    // FPS feel: lean into strafes, idle sway, sprint widens the view
+    const walk = Math.min(1, sp / 2.3);
+    this.bob += dt * sp * 3.4;
     this.time = (this.time || 0) + dt;
-    this.roll = THREE.MathUtils.lerp(this.roll || 0, -mx * 0.014 * Math.min(1, sp / 2), Math.min(1, dt * 6));
-    const idle = this.moving ? 0.3 : 1;
-    const swayP = Math.sin(this.time * 0.8) * 0.004 * idle, swayY = Math.cos(this.time * 0.55) * 0.003 * idle;
+    // spring for the vertical head offset
+    this.headV = this.headV || 0;
+    this.headY = this.headY || 0;
+    const kSpring = 160, damp = 16;
+    this.headV += (-kSpring * this.headY - damp * this.headV) * dt;
+    this.headY += this.headV * dt;
+    // breathing rise and fall, deeper when winded or scared
+    const tired = 1 - this.stamina;
+    const breathAmp = (0.004 + tired * 0.012 + (this.game.fear || 0) * 0.004) * (this.holding ? 0.15 : 1);
+    const breathY = Math.sin(this.time * (1.9 + tired * 2.5)) * breathAmp;
+    // side-to-side weight shift between steps
+    const sway = Math.sin(this.bob * 0.5) * 0.03 * walk;
+    // external shake (monster footsteps, impacts)
+    this.shake = Math.max(0, (this.shake || 0) - dt * 2.5);
+    const sh = this.shake * this.shake;
+    const shX = (Math.random() - 0.5) * 0.03 * sh, shY = (Math.random() - 0.5) * 0.03 * sh;
+    this.camera.position.set(this.pos.x, this.eye + this.headY + breathY + Math.abs(Math.sin(this.bob)) * 0.012 * walk + shY, this.pos.z);
+    this.camera.position.x += Math.cos(this.yaw) * (sway + shX);
+    this.camera.position.z -= Math.sin(this.yaw) * (sway + shX);
+    // lean into strafes, roll with the step, pitch forward when running
+    this.roll = THREE.MathUtils.lerp(this.roll || 0, -mx * 0.02 * walk + Math.sin(this.bob * 0.5) * 0.006 * walk, Math.min(1, dt * 7));
+    const runPitch = this.running ? -0.035 : 0;
+    this.runPitch = THREE.MathUtils.lerp(this.runPitch || 0, runPitch, Math.min(1, dt * 4));
+    const swayP = Math.sin(this.time * 0.8) * 0.003 * (1 - walk) + this.headY * 0.6 + sh * (Math.random() - 0.5) * 0.02;
+    const swayY = Math.cos(this.time * 0.55) * 0.0025 * (1 - walk);
     if (!this.lookTarget) {
-      const fovT = 72 + (this.running ? 7 : 0) - (this.holding ? 3 : 0);
+      const fovT = 72 + (this.running ? 6 : 0) - (this.holding ? 3 : 0) - (this.listening ? 4 : 0);
       if (Math.abs(this.camera.fov - fovT) > 0.05) {
         this.camera.fov += (fovT - this.camera.fov) * Math.min(1, dt * 4);
         this.camera.updateProjectionMatrix();
@@ -216,13 +237,14 @@ export class Player {
       const q = new THREE.Quaternion().setFromRotationMatrix(m);
       this.camera.quaternion.slerp(q, Math.min(1, dt * 10));
     } else {
-      this.camera.rotation.set(this.pitch + swayP, this.yaw + swayY, this.roll, 'YXZ');
+      this.camera.rotation.set(this.pitch + swayP + this.runPitch, this.yaw + swayY, this.roll, 'YXZ');
     }
 
     this.updateProjectiles(dt);
   }
 
   footstep() {
+    this.headV = (this.headV || 0) - (this.crouch ? 0.12 : this.running ? 0.55 : 0.28);
     const surf = this.level.floorAt(this.pos.x, this.pos.z);
     const mul = SURF_MUL[surf] ?? 1;
     const base = this.crouch ? 1.1 : this.running ? 9 : 3.8;
@@ -231,7 +253,7 @@ export class Player {
     this.audio.step(surf, loud * Math.min(1.4, mul));
     const p = new THREE.Vector3(this.pos.x, 0.05, this.pos.z);
     this.game.noise(p, {
-      radius, visual: Math.max(2.4, radius * 1.15), source: 'player', kind: this.crouch ? 'crouch' : this.running ? 'run' : 'step',
+      radius, visual: Math.max(1.8, radius), source: 'player', kind: this.crouch ? 'crouch' : this.running ? 'run' : 'step',
       color: COLORS.player, strength: this.crouch ? 0.55 : 0.9, speed: this.running ? 12 : 9, decay: 0.9,
     });
   }
@@ -274,7 +296,7 @@ export class Player {
         p.bounces++;
         const loud = p.bounces === 1 ? 1 : 0.5;
         this.audio.impact(m.position, loud);
-        this.game.noise(m.position.clone(), { radius: 10 * loud, visual: 13 * loud, source: 'stone', kind: 'stone', color: COLORS.stone, strength: 1.2 * loud, speed: 12 });
+        this.game.noise(m.position.clone(), { radius: 10 * loud, visual: 10 * loud, source: 'stone', kind: 'stone', color: COLORS.stone, strength: 1.2 * loud, speed: 12 });
       }
       if (p.life <= 0 || (p.bounces > 0 && p.vel.length() < 0.6)) {
         m.removeFromParent();

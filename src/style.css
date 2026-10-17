@@ -7,7 +7,7 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: #000; overflow: hidden; color: var(--fg); font-family: 'IBM Plex Mono', monospace; }
-#app canvas { display: block; }
+#app canvas { display: block; image-rendering: pixelated; }
 .hidden { display: none !important; }
 
 .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.92); z-index: 10; }
@@ -91,3 +91,6 @@ button:disabled { opacity: 0.6; cursor: wait; }
 #continue { margin-right: 10px; }
 button.ghost { margin-left: 10px; border-color: #3a4a50; color: #9ab; }
 button.late { margin-top: 26px; opacity: 0; animation: fadein 2s forwards; animation-delay: 17s; }
+
+#listen { position: absolute; left: 50%; top: 50%; width: 300px; height: 300px; margin: -150px; border-radius: 50%; border: 1px solid rgba(255,80,60,0.12); }
+#listen-mark { position: absolute; left: 50%; top: 50%; width: 30px; height: 8px; margin: -4px -15px; background: radial-gradient(ellipse at center, #ff4030 0%, rgba(255,60,40,0) 70%); filter: blur(1px); opacity: 0; }

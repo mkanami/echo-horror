@@ -479,7 +479,7 @@ export class Monster {
 
     if (this.state !== 'lunge') this.move(dt);
     this.animate(dt, player);
-    this.sounds(dt, pd);
+    this.sounds(dt, pd, player);
     if (this.voice) this.voice.setPos(this.headWorld);
   }
 
@@ -529,7 +529,7 @@ export class Monster {
     this.pos.z += (dz / d) * s;
   }
 
-  sounds(dt, pd) {
+  sounds(dt, pd, player) {
     const sp = this.curSpeed || 0;
     if (sp > 0.1 && this.state !== 'lunge') {
       this.stepAcc += sp * dt;
@@ -538,6 +538,10 @@ export class Monster {
         this.stepAcc = 0;
         const heavy = this.state === 'hunt' ? 1.5 : 0.8;
         this.audio.monsterStep(this.pos, heavy);
+        if (player) {
+          const d = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
+          player.shake = Math.max(player.shake || 0, Math.max(0, 1 - d / 7) * (this.state === 'hunt' ? 1 : 0.6));
+        }
         echo.emit(new THREE.Vector3(this.pos.x, 0.1, this.pos.z), {
           radius: this.state === 'hunt' ? 6.5 : 4.2, speed: 8, strength: this.state === 'hunt' ? 1.1 : 0.8, decay: 1.0, color: COLORS.monster,
         });
