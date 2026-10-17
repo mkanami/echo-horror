@@ -7,7 +7,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { AfterimagePass } from 'three/examples/jsm/postprocessing/AfterimagePass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
-import { echo, COLORS, createDust, setRelief, setListen } from './echo.js';
+import { echo, COLORS, createDust, setRelief, setListen, pomScale } from './echo.js';
 import { AudioEngine } from './audio.js';
 import { Level } from './level.js';
 import { Player } from './player.js';
@@ -16,9 +16,36 @@ import { INTRO, NOTES, TIPS, ENDING } from './story.js';
 import { Siege, SIEGE_TIME } from './siege.js';
 import { ViewModel } from './viewmodel.js';
 import { Extras } from './extras.js';
+import { front } from './frontend.js';
+import { createCrtInterface } from './crt-interface.js';
+import { GeneratorSequence, FUSE_ACTIONS } from './interaction-sequence.js';
+import { GeneratorProps } from './work-props.js';
 
 const $ = (id) => document.getElementById(id);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
+
+// Install progress callbacks before constructing anything that requests textures.
+const failedTextures = [];
+let menuReady = false;
+THREE.DefaultLoadingManager.onProgress = (_url, done, total) => {
+  front.progress('Загрузка материалов', done / total, `Материалы: ${done} / ${total}`);
+};
+THREE.DefaultLoadingManager.onError = (url) => failedTextures.push(url);
+THREE.DefaultLoadingManager.onLoad = () => {
+  if (failedTextures.length) {
+    front.fail('Некоторые материалы не загрузились. Проверьте соединение и повторите загрузку.', () => location.reload());
+  } else {
+    menuReady = true;
+    front.saveAvailable(!!loadSave());
+    let restarting = false;
+    try {
+      restarting = sessionStorage.getItem('echo.new-session') === '1';
+      sessionStorage.removeItem('echo.new-session');
+    } catch (_) {}
+    if (restarting) boot(false);
+    else front.assetsReady();
+  }
+};
 
 // ------------------------------------------------------------------ render
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -32,7 +59,8 @@ const camera = new THREE.PerspectiveCamera(80, innerWidth / innerHeight, 0.05, 1
 camera.rotation.order = 'YXZ';
 
 const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
+const worldPass = new RenderPass(scene, camera);
+composer.addPass(worldPass);
 // contact shadows in corners, under furniture, in the folds of bodies
 const gtao = new GTAOPass(scene, camera, innerWidth, innerHeight);
 gtao.output = GTAOPass.OUTPUT.Default;
@@ -102,18 +130,20 @@ const fx = new ShaderPass({
   uniforms: {
     tDiffuse: { value: null },
     uTime: { value: 0 },
+    uInterface: { value: 0 },
     uGlitch: { value: 0 },
     uWhite: { value: 0 },
     uFear: { value: 0 },
     uFlash: { value: 0 },
     uRes: { value: new THREE.Vector2(innerWidth, innerHeight) },
     uBlur: { value: new THREE.Vector2() },
+    uGlassOffset: { value: new THREE.Vector2() },
     uExposure: { value: 1 },
     uSmear: { value: 0 },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float uTime, uFear, uFlash, uGlitch, uWhite; uniform vec2 uRes; uniform vec2 uBlur; uniform float uExposure; uniform float uSmear; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float uInterface; uniform float uTime, uFear, uFlash, uGlitch, uWhite; uniform vec2 uRes; uniform vec2 uBlur; uniform vec2 uGlassOffset; uniform float uExposure; uniform float uSmear; varying vec2 vUv;
     float rand(vec2 c){ return fract(sin(dot(c, vec2(12.9898,78.233))) * 43758.5453); }
     void main(){
       vec2 c = vUv - 0.5;
@@ -126,6 +156,7 @@ const fx = new ShaderPass({
       uv.y += (rand(vec2(floor(uTime * 24.0), 3.0)) - 0.5) * 0.03 * uGlitch;
       // cheap-lens fringing, growing toward the edges; motion smear along the camera's swing
       vec2 ca = c * (0.0015 + dot(c, c) * (0.021 + uSmear * uSmear * 0.03) + uFear * 0.006 + uGlitch * 0.03); // the fringe tears wider in a psychosis
+      ca *= mix(1.0, 0.08, uInterface);
       vec3 col;
       if (dot(uBlur, uBlur) < 1e-7) col = vec3(texture2D(tDiffuse, uv + ca).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - ca).b);
       else {
@@ -145,7 +176,7 @@ const fx = new ShaderPass({
       // halation: bright light picks up a warm fringe
       float hl = max(max(bleed.r, bleed.g), bleed.b);
       col += vec3(0.07, 0.025, 0.01) * smoothstep(0.25, 0.9, hl);
-      float vig = mix(1.0, smoothstep(0.92, 0.12, length(c) * (1.0 + uFear * 0.6)), 0.85);
+      float vig = mix(1.0, smoothstep(0.92, 0.12, length(c - uGlassOffset) * (1.0 + uFear * 0.6)), 0.85);
       col *= vig;
       // filmic shoulder before the tube eats its share of the light
       col = col * (1.0 + col * 0.15) / (1.0 + col * 0.6);
@@ -155,6 +186,7 @@ const fx = new ShaderPass({
       // high-res CRT: scanlines, aperture-grille phosphors, slow refresh bar, faint interlace
       float sl = 0.5 + 0.5 * sin(gl_FragCoord.y * 3.14159 * 0.5);
       float slDepth = mix(0.38, 0.24, smoothstep(0.1, 0.7, dot(col, vec3(0.33))));
+      slDepth *= mix(1.0, 0.55, uInterface);
       col *= ((1.0 - slDepth) + slDepth * 2.0 * sl * 0.92) * (1.0 + slDepth * 0.25);
       float m3 = mod(gl_FragCoord.x, 3.0);
       vec3 mask = m3 < 1.0 ? vec3(1.0, 0.84, 0.84) : m3 < 2.0 ? vec3(0.84, 1.0, 0.84) : vec3(0.84, 0.84, 1.0);
@@ -162,10 +194,13 @@ const fx = new ShaderPass({
       float bar = smoothstep(0.14, 0.0, abs(fract(vUv.y * 0.6 - uTime * 0.07) - 0.5));
       col *= 1.0 + bar * 0.08;
       col *= 1.0 - 0.025 * step(0.5, fract(gl_FragCoord.y * 0.25 + floor(uTime * 30.0) * 0.5));
-      col += (rand(vUv * uRes + fract(uTime * 7.13)) - 0.5) * (0.016 + uFear * 0.04);
+      col += (rand(vUv * uRes + fract(uTime * 7.13)) - 0.5) * (0.016 + uFear * 0.04) * mix(1.0, 0.22, uInterface);
       // tube corners and the dark glass at the very edge
-      vec2 cc = abs(uv - 0.5) * 2.0;
+      // The glass lip sits closer than the vignette; the outer bezel stays fixed.
+      vec2 cc = abs(uv - 0.5 - uGlassOffset * 0.45) * 2.0;
       float corner = smoothstep(1.0, 0.93, max(cc.x, cc.y) + pow(min(cc.x, cc.y), 6.0) * 0.06);
+      float rim = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+      corner *= smoothstep(0.0, 0.012, rim);
       col *= corner;
       // grade: drained and cold in the shadows, near-neutral in the light;
       // blood keeps its colour while everything else is drained
@@ -185,8 +220,37 @@ const fx = new ShaderPass({
 // anti-alias the scene first, then lay the CRT over it (so the mask stays sharp)
 const smaa = new SMAAPass(Math.max(1, innerWidth * renderer.getPixelRatio()), Math.max(1, innerHeight * renderer.getPixelRatio()));
 composer.addPass(smaa);
+// UI is composited BEFORE the lens/CRT pass so the whole screen shares its
+// convex glass, phosphor mask, scanlines, fringing and vignette.
+const menuBackground = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+const crtInterface = createCrtInterface(() => 0.3 + (game.state === 'menu' ? 0 : fx.uniforms.uFear.value * 0.12));
+const uiPass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uInterface: { value: null }, uBackground: { value: null }, uCachedBackground: { value: 0 }, uShowInterface: { value: 1 } },
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform sampler2D uInterface; uniform sampler2D uBackground; uniform float uCachedBackground; uniform float uShowInterface; varying vec2 vUv;
+    void main() {
+      vec4 world = uCachedBackground > 0.5 ? texture2D(uBackground, vUv) : texture2D(tDiffuse, vUv);
+      vec4 ui = texture2D(uInterface, vUv);
+      ui.a *= uShowInterface;
+      // Blend DOM scrims in display space, then return to the linear pipeline.
+      vec3 displayWorld = pow(max(world.rgb, vec3(0.0)), vec3(1.0 / 2.2));
+      vec3 displayUI = pow(max(ui.rgb, vec3(0.0)), vec3(1.0 / 2.2));
+      gl_FragColor = vec4(pow(mix(displayWorld, displayUI, ui.a), vec3(2.2)), 1.0);
+    }`,
+});
+uiPass.uniforms.uInterface.value = crtInterface.texture;
+uiPass.uniforms.uBackground.value = menuBackground.texture;
+uiPass.enabled = false;
+composer.addPass(uiPass);
 composer.addPass(fx);
 composer.addPass(new OutputPass());
+// The menu keeps a CSS-resolution postprocess chain. Retina game buffers and
+// gameplay passes stay allocated and unchanged, so returning to play is cheap.
+const menuComposer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, depthBuffer: false }));
+menuComposer.setPixelRatio(1);
+menuComposer.addPass(uiPass);
+menuComposer.addPass(fx);
+menuComposer.addPass(new OutputPass());
 
 addEventListener('resize', () => {
   if (!innerWidth || !innerHeight) return;
@@ -194,12 +258,14 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
+  menuComposer.setSize(innerWidth, innerHeight);
   fx.uniforms.uRes.value.set(innerWidth, innerHeight);
 });
 
 // ------------------------------------------------------------------ world
 const audio = new AudioEngine();
 const level = new Level(scene);
+const generatorProps = new GeneratorProps(scene);
 const dust = createDust();
 scene.add(dust);
 audio.occlusion = (pos) => level.occlusion(camera.position, pos);
@@ -212,6 +278,7 @@ const game = {
   deaths: 0,
   checkpoint: null,
   fear: 0,
+  psychosis: 0,
   noise(pos, o) {
     const soft = o.source === 'player' ? roomK : 1;
     echo.emit(pos, { radius: o.visual ?? o.radius, speed: o.speed ?? 11, strength: (o.strength ?? 1) * soft, decay: o.decay ?? 0.8, color: o.color ?? COLORS.player });
@@ -299,26 +366,29 @@ const radarCtx = () => document.getElementById('radar-c').getContext('2d');
 let radarT = 0, radarNode = null;
 const siegeUI = {
   show(v) {
+    $('hud').classList.toggle('siege-active', v);
     $('siege').classList.toggle('hidden', !v);
     $('brief').classList.toggle('hidden', !v);
     if (v) later(14, () => $('brief').classList.add('hidden'));
     if (!v) $('radar').classList.add('hidden');
   },
   update(sg) {
+    const lowered = ['A', 'B', 'C'].find(k => sg.shut[k]);
     const p = Math.min(1, sg.t / SIEGE_TIME);
     $('sg-lift').style.width = `${p * 100}%`;
-    $('sg-floor').textContent = sg.arrived ? 'ЗДЕСЬ' : `${Math.ceil(SIEGE_TIME - sg.t)} с`;
+    $('sg-floor').textContent = sg.arrived ? 'ЗДЕСЬ' : sg.stalled ? 'СТОП' : `${Math.ceil(sg.remaining)} с`;
     const hpOf = (k) => (sg.broken[k] > 0 ? 'ВЫРВАНА' : `${Math.ceil(sg.hp[k])}%`);
-    $('sg-power').style.width = `${sg.shut.A ? sg.hp.A : sg.shut.B ? sg.hp.B : 0}%`;
-    $('sg-power').classList.toggle('low', (sg.shut.A ? sg.hp.A : sg.hp.B) < 30);
-    $('sg-pw').textContent = sg.shut.A ? 'ДВЕРЬ' : sg.shut.B ? 'ЛЮК' : '—';
-    $('sg-A').textContent = `ДВЕРЬ ${sg.shut.A ? '▼' : '▲'} ${hpOf('A')}`;
-    $('sg-B').textContent = `ЛЮК ${sg.shut.B ? '▼' : '▲'} ${hpOf('B')}`;
-    $('sg-A').classList.toggle('shut', sg.shut.A);
-    $('sg-B').classList.toggle('shut', sg.shut.B);
-    $('sg-A').textContent += ' [1]';
-    $('sg-B').textContent += ' [2]';
-    $('sg-warn').textContent = sg.phase === 'ram' ? (sg.route === 'A' ? 'БЬЁТСЯ В ДВЕРЬ' : 'БЬЁТСЯ В ЛЮК') : sg.phase === 'squeeze' ? 'ЛЕЗЕТ ВНУТРЬ' : sg.phase === 'inside' ? 'ОНО В ХОЛЛЕ' : '';
+    $('sg-power').style.width = `${lowered ? sg.hp[lowered] : 0}%`;
+    $('sg-power').classList.toggle('low', lowered && sg.hp[lowered] < 30);
+    $('sg-pw').textContent = lowered === 'A' ? 'ДВЕРЬ' : lowered === 'B' ? 'ЛЮК' : lowered === 'C' ? 'СЛЕВА' : '—';
+    $('sg-charge').style.width = `${sg.power}%`;
+    $('sg-charge').classList.toggle('low', sg.power < 25);
+    $('sg-charge-value').textContent = sg.powerLocked ? '—' : `${Math.ceil(sg.power)}%`;
+    for (const [i, k] of ['A', 'B', 'C'].entries()) {
+      $(`sg-${k}`).textContent = `${['ДВЕРЬ', 'ЛЮК', 'СЛЕВА'][i]} ${sg.shut[k] ? '▼' : '▲'} ${hpOf(k)} [${i + 1}]`;
+      $(`sg-${k}`).classList.toggle('shut', sg.shut[k]);
+    }
+    $('sg-warn').textContent = sg.phase === 'inside' && sg.monsterInHall ? 'ОНО В ХОЛЛЕ' : sg.phase === 'squeeze' ? 'ЛЕЗЕТ ВНУТРЬ' : sg.stalled ? 'ЛИФТ ВСТАЛ · КНОПКА ВЫЗОВА' : sg.powerLocked ? 'ПРИВОД ОСТЫВАЕТ' : sg.bracing ? 'ПОДПИРАЕШЬ ЗАСЛОНКУ' : sg.phase === 'ram' ? (sg.route === 'A' ? 'БЬЁТСЯ В ДВЕРЬ' : sg.route === 'B' ? 'БЬЁТСЯ В ЛЮК' : 'БЬЁТСЯ СЛЕВА') : '';
   },
 };
 function drawRadar(node) {
@@ -331,6 +401,9 @@ function drawRadar(node) {
   c.strokeRect(X(4), Y(3), X(13) - X(4), Y(13) - Y(3)); // hall
   c.strokeRect(X(13), Y(7), X(22) - X(13), Y(10) - Y(7)); // corridor
   c.strokeRect(X(22), Y(3), X(32) - X(22), Y(14) - Y(3)); // generator room
+  c.strokeRect(X(1), Y(7), X(3) - X(1), Y(16) - Y(7)); // west service passage
+  c.strokeRect(X(3), Y(7), X(4) - X(3), Y(10) - Y(7));
+  c.strokeRect(X(3), Y(14), X(7) - X(3), Y(16) - Y(14));
   c.setLineDash([4, 3]);
   c.strokeRect(X(7.05), Y(13), X(7.95) - X(7.05), Y(19) - Y(13)); // duct
   c.setLineDash([]);
@@ -351,6 +424,8 @@ function drawRadar(node) {
 let siege = null;
 siege = new Siege({ audio, level, game, player, monster, ui: siegeUI });
 game.onLiftArrived = () => liftArrive();
+game.onLiftStall = () => { if (lift) lift.setGain(0, 0.15); };
+game.onLiftRestart = () => { if (lift) lift.setGain(1, 0.4); };
 level.onShutter = (d, closed) => {
   const p = d.obj.position.clone();
   audio.play('door', p, { gain: 0.7, rate: closed ? 1.15 : 1.3, wet: 0.5 });
@@ -358,28 +433,31 @@ level.onShutter = (d, closed) => {
 };
 
 // ------------------------------------------------------------------ input
-let sens = 1.4;
+let sens = +$('sens').value;
 let pointerLocked = false;
 let dragLook = false;
 const canvas = renderer.domElement;
 
 addEventListener('keydown', (e) => {
-  player.keys.add(e.code);
+  if (e.code === 'Tab' && (game.state === 'play' || game.state === 'note')) e.preventDefault();
+  if (game.state === 'play') player.keys.add(e.code);
   if (e.repeat) return;
   if (game.state === 'play') {
-    if (e.code === 'KeyF') player.click();
+    if (e.code === 'Escape') { pause(); return; }
+    if (player.fallT > 0) return;
+    if (e.code === 'KeyF' && !vm.work) player.click();
     if (e.code === 'KeyC' && !(player.crouch && level.ceilAt(Math.floor(player.pos.x), Math.floor(player.pos.z)) < 1.7)) player.crouch = !player.crouch;
     if (e.code === 'KeyE') interact();
-    if (e.code === 'KeyG' && extras.throwClock(camera)) vm.throw('clock');
-    if (siege && siege.active && ['Digit1', 'Digit2', 'Digit3'].includes(e.code)) {
+    if (e.code === 'KeyG' && !vm.work && extras.throwClock(camera)) vm.throw('clock');
+    if (siege && siege.active && ['Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(e.code)) {
       $('brief').classList.add('hidden');
-      if (e.code === 'Digit1' || e.code === 'Digit2') {
-        const it = level.items.find((i) => i.type === (e.code === 'Digit1' ? 'shutterA' : 'shutterB'));
+      const gate = { Digit1: 'A', Digit2: 'B', Digit3: 'C' }[e.code];
+      if (gate) {
+        const it = level.items.find((i) => i.type === `shutter${gate}`);
         if (it && it.pos.distanceTo(camera.position) < 3) vm.act('press', it.pos);
+        siege.toggle(gate);
       }
-      if (e.code === 'Digit1') siege.toggle('A');
-      if (e.code === 'Digit2') siege.toggle('B');
-      if (e.code === 'Digit3') {
+      if (e.code === 'Digit4') {
         const n = siege.ping();
         if (n) {
           radarNode = n;
@@ -395,11 +473,12 @@ addEventListener('blur', () => player.keys.clear());
 
 canvas.addEventListener('mousedown', (e) => {
   if (game.state !== 'play' && game.state !== 'note') return;
+  if (player.fallT > 0) return;
   if (!pointerLocked) {
     lock();
     dragLook = true;
   }
-  if (e.button === 0 && game.state === 'play' && pointerLocked) {
+  if (e.button === 0 && game.state === 'play' && pointerLocked && !vm.work) {
     if (player.stones > 0 && !player.frozen) vm.throw();
     player.throwStone(scene);
   }
@@ -451,23 +530,7 @@ let savedQ = 'high';
 try { savedQ = localStorage.getItem('echo.quality') || 'high'; } catch (_) {}
 document.querySelectorAll('.quality').forEach((el) => el.addEventListener('change', (e) => applyQuality(e.target.value)));
 
-// ---- texture loading progress
-THREE.DefaultLoadingManager.onProgress = (url, done, total) => {
-  if (!audio.ready && $('play').disabled) $('play').textContent = `ЗАГРУЗКА ТЕКСТУР ${Math.round((done / total) * 100)}%`;
-};
-setTimeout(() => {
-  if ($('play').disabled && !audio.ctx) {
-    $('play').disabled = false;
-    $('play').textContent = 'НАЧАТЬ';
-  }
-}, 20000);
-THREE.DefaultLoadingManager.onLoad = () => {
-  if (!audio.ready) {
-    $('play').disabled = false;
-    $('play').textContent = loadSave() ? 'НОВАЯ ИГРА' : 'НАЧАТЬ';
-  }
-};
-$('vol').addEventListener('input', (e) => audio.setMaster(+e.target.value, 0.05));
+$('vol').addEventListener('input', (e) => { if (audio.ctx && audio.master) audio.setMaster(+e.target.value, 0.05); });
 
 // ------------------------------------------------------------------ UI
 const hintQueue = [];
@@ -505,6 +568,7 @@ function updateLocation(dt) {
 function objective() {
   const f = game.flags;
   if (f.arrived) return 'Войди в лифт.';
+  if (siege?.stalled) return 'Лифт встал. Удерживай [E] у кнопки вызова, чтобы перезапустить.';
   if (f.called) return 'Дождись лифта. Не дай ему войти в холл.';
   if (f.powered) return 'Лифтовый холл, запад от генераторной: вызвать лифт.';
   if (f.fuseA && f.fuseB) return 'Генераторная, север от атриума: поставить ПН-2 и запустить.';
@@ -527,8 +591,41 @@ function objectivePos() {
   return null;
 }
 
+let lastObjective = null, objectiveUntil = 0, objectivePending = false;
+function resetObjective() {
+  lastObjective = null;
+  objectiveUntil = 0;
+  objectivePending = false;
+  const element = $('objective');
+  element.style.transition = 'none';
+  element.classList.remove('visible');
+  element.setAttribute('aria-hidden', 'true');
+  void element.offsetWidth;
+  element.style.transition = '';
+}
+function updateObjective() {
+  const text = objective();
+  if (text !== lastObjective) {
+    // The initial goal stays quiet. Later changes appear once, after a note
+    // closes, so a plot update is never spent behind the paper overlay.
+    objectivePending = lastObjective !== null && !!text;
+    lastObjective = text;
+    $('objective-text').textContent = text;
+  }
+  if (game.state === 'play' && objectivePending) {
+    objectiveUntil = game.time + 6;
+    objectivePending = false;
+  }
+  const recall = player.keys.has('Tab');
+  const visible = game.state === 'play' && !!text && (recall || game.time < objectiveUntil);
+  const caption = recall ? 'Вспомнить' : 'Новая цель';
+  if ($('objective-caption').textContent !== caption) $('objective-caption').textContent = caption;
+  $('objective').classList.toggle('visible', visible);
+  if ($('objective').getAttribute('aria-hidden') !== String(!visible)) $('objective').setAttribute('aria-hidden', String(!visible));
+}
+
 function updateHUD() {
-  $('objective').textContent = objective();
+  updateObjective();
   const bm = $('m-breath');
   bm.querySelector('i').style.width = `${player.breathCap * 100}%`;
   bm.classList.toggle('holding', player.holding);
@@ -574,17 +671,29 @@ function promptFor(it) {
   switch (it.type) {
     case 'note': return '[E] Прочитать';
     case 'stone': return player.stones >= 5 ? 'Больше не унести' : '[E] Подобрать камень';
-    case 'fuseA': case 'fuseB': case 'card': return `[E] Взять: ${it.name}`;
-    case 'panel': return f.powered ? '' : f.fuseA && f.fuseB ? (hold && hold.it === it ? `Прокачка топлива ${Math.round((hold.t / 5) * 100)}% — громко` : '[держи E] Поставить ПН-2 и прокачать топливо') : 'Щиток генератора. Не хватает предохранителей.';
-    case 'call': return f.called ? '' : f.powered ? '[E] Вызвать лифт' : 'Кнопка вызова. Нет питания.';
-    case 'cab': return f.arrived ? '[E] Ехать наверх' : '';
+    case 'fuseA': return itemAction?.it === it ? 'Выкручиваешь предохранитель…' : '[E] Выкрутить ПН-2';
+    case 'fuseB': case 'card': return `[E] Взять: ${it.name}`;
+    case 'panel': {
+      if (f.powered) return '';
+      if (!f.fuseA || !f.fuseB) return 'Щиток генератора. Не хватает предохранителей.';
+      const frame=hold?.it===it?hold.generator?.frame:null;
+      if (!frame) return '[держи E] Подготовить и запустить генератор';
+      if (frame.kind==='insertFuse') return `Устанавливаешь ПН-2 · ${frame.slot+1} / 2`;
+      if (frame.kind==='uncap') return 'Открываешь канистру…';
+      if (frame.kind==='pour') return `Заливаешь топливо · ${Math.round(frame.k*100)}%`;
+      if (frame.kind==='recap') return 'Закрываешь канистру…';
+      return `Подкачка · ${Math.min(5,Math.floor(frame.time)+1)} / 5 — громко`;
+    }
+    case 'call': return siege.stalled ? hold?.it === it ? `Перезапуск · ${Math.min(100, Math.round(hold.t / 2 * 100))}%` : '[держи E] Перезапустить лифт' : f.called ? '' : f.powered ? '[E] Вызвать лифт' : 'Кнопка вызова. Нет питания.';
+    case 'cab': return f.arrived ? hold?.it === it ? 'Закрываешь двери… Держи E' : '[держи E] Закрыть двери и ехать наверх' : '';
     case 'labdoor': return f.card ? (hold && hold.it.type === 'labdoor' ? `Открываешь медленно… ${Math.round((hold.t / 2.5) * 100)}%` : '[держи E] Приложить карту и открыть тихо') : 'Шлюз заперт. Нужна карта доступа.';
     case 'locked': return '[E] Дёрнуть ручку';
     case 'slam': { const d = level.door(it.door); return d.broken ? 'Дверь выбита.' : d.closed ? '[E] Открыть дверь' : '[E] Захлопнуть дверь (громко)'; }
     case 'locker': return it.low ? (player.hidden ? '[E] Вылезти' : '[E] Залезть под кровать') : player.hidden ? '[E] Выйти' : '[E] Спрятаться в шкафчик';
-    case 'shutterA': return siege.active ? `[E] ${siege.shut.A ? 'Поднять' : 'Опустить'} заслонку двери` : 'Пульт заслонки. Без питания.';
-    case 'shutterB': return siege.active ? `[E] ${siege.shut.B ? 'Открыть' : 'Закрыть'} люк вентиляции` : 'Пульт люка вентиляции. Без питания.';
-    case 'seismo': return siege.active ? '[E] Сейсмодатчик (−2% питания)' : 'Сейсмодатчик. Экран мёртв.';
+    case 'shutterA': return siege.active ? siege.powerLocked ? 'Привод остывает…' : `[E] ${siege.shut.A ? 'Поднять' : 'Опустить'} заслонку двери` : 'Пульт заслонки. Без питания.';
+    case 'shutterB': return siege.active ? siege.powerLocked ? 'Привод остывает…' : `[E] ${siege.shut.B ? 'Открыть' : 'Закрыть'} люк вентиляции` : 'Пульт люка вентиляции. Без питания.';
+    case 'shutterC': return siege.active ? siege.powerLocked ? 'Привод остывает…' : `[E] ${siege.shut.C ? 'Поднять' : 'Опустить'} заслонку служебной двери` : 'Пульт служебной двери. Без питания.';
+    case 'seismo': return siege.active ? siege.pingCooldown > 0 ? `Датчик заряжается · ${Math.ceil(siege.pingCooldown)} с` : '[E] Сейсмодатчик (−8% питания)' : 'Сейсмодатчик. Экран мёртв.';
   }
   return extras.prompt(it) || '';
 }
@@ -598,45 +707,129 @@ function take(it) {
 
 // actions that take time: hold E
 let hold = null;
+let itemAction = null;
+let pouringLoop = null;
+let pouringActive = false;
 const HOLD = {
-  panel: { need: 5, ok: () => !game.flags.powered && game.flags.fuseA && game.flags.fuseB },
+  call: { need: 2, ok: () => siege.stalled },
+  cab: { need: 1.6, ok: () => game.flags.arrived },
+  panel: { ok: () => !game.flags.powered && game.flags.fuseA && game.flags.fuseB },
   labdoor: { need: 2.5, ok: () => game.flags.card },
 };
+function cancelWork() {
+  if (itemAction && !itemAction.committed) itemAction.it.obj.visible = true;
+  itemAction = hold = null;
+  vm.work = null;
+  player.actionLean = 0;
+  if (pouringLoop) pouringLoop.setGain(0,0.08);
+  pouringActive = false;
+  generatorProps.sync(game.flags);
+}
+function beginFuse(it) {
+  const kind=it.type==='fuseA'?'unscrew':'pickupFuse';
+  itemAction={it,kind,t:0,committed:false,...FUSE_ACTIONS[kind]};
+  vm.actT=vm.throwT=0;
+  vm.work={kind,k:0,target:it.pos.clone(),normal:V(1,0,0)};
+}
+function completeFuse(it) {
+  take(it);
+  game.flags[it.type]=true;
+  if(it.type==='fuseA') releaseMonster();
+  else {
+    later(1.6, () => {
+      if (!monster.active || game.state !== 'play') return;
+      const drop=V(53,0,15.5);
+      audio.crash(V(53,4.3,15.5));
+      echo.emit(V(53,4.3,15.5),{radius:16,speed:12,strength:1.4,color:COLORS.monster});
+      monster.spawn(drop,'wander');monster.startChase();
+      game.hint('Сверху. Шлюз — и вниз, в вентканал за моргом.',4,true);
+    });
+    game.hint('Оба ПН-2. Генераторная — к северу от атриума.');
+    saveCheckpoint();
+  }
+}
+function updateItemAction(dt) {
+  if(!itemAction)return;
+  const a=itemAction;
+  if(game.state!=='play'||player.hidden||Math.hypot(player.pos.x-a.it.pos.x,player.pos.z-a.it.pos.z)>1.8){cancelWork();return;}
+  const before=a.t/a.duration;
+  a.t=Math.min(a.duration,a.t+dt);const k=a.t/a.duration;
+  vm.work={kind:a.kind,k,target:a.it.pos.clone(),normal:V(1,0,0)};
+  if(k>=a.grip)a.it.obj.visible=false;
+  if(a.kind==='unscrew')for(const mark of [.35,.51,.63])if(before<mark&&k>=mark){
+    audio.play('creak',a.it.pos,{gain:.2,rate:1.4,wet:.35});
+    game.noise(a.it.pos.clone(),{radius:2.3,visual:2.4,source:'player',kind:'item',color:COLORS.item,strength:.35});
+  }
+  if(!a.committed&&k>=a.commit){a.committed=true;completeFuse(a.it);}
+  if(k>=1){itemAction=null;vm.work=null;}
+}
 function updateHold(dt) {
   if (!hold) return;
+  if (player.fallT > 0) { cancelWork(); return; }
+  if (game.state !== 'play') { cancelWork(); return; }
   if (focus !== hold.it && !(focus && hold.it.type === 'labdoor' && focus.type === 'labdoor')) {
-    hold = null;
+    cancelWork();
     return;
   }
   if (!player.keys.has('KeyE')) {
-    hold = null;
+    cancelWork();
     return;
   }
   hold.t += dt;
+  if (hold.it.type === 'call' || hold.it.type === 'cab') {
+    hold.tick -= dt;
+    if (hold.tick <= 0) {
+      hold.tick = 0.55;
+      vm.act('press', hold.it.pos);
+      audio.play('tick', hold.it.pos, { gain: 0.25, rate: 0.8, wet: 0.3 });
+    }
+    if (hold.t >= HOLD[hold.it.type].need) {
+      const type = hold.it.type;
+      cancelWork();
+      if (type === 'call') siege.restartLift();
+      else ending();
+    }
+    return;
+  }
+  if (hold.generator) {
+    for(const event of hold.generator.advance(dt)){
+      if(event.event==='insert'){
+        game.flags.genInstalled=Math.max(game.flags.genInstalled||0,event.slot+1);
+        audio.play('click',generatorProps.sockets[event.slot],{gain:.45,rate:.75,wet:.4});
+        game.noise(generatorProps.sockets[event.slot].clone(),{radius:2.2,visual:2.6,source:'player',kind:'item',color:COLORS.item,strength:.45});
+      }else if(event.event==='fuel')game.flags.genFueled=true;
+      else if(event.event==='capOpen'||event.event==='capClose')audio.play('click',generatorProps.funnel,{gain:.25,rate:event.event==='capOpen'?.7:.9,wet:.25});
+      else if(event.event==='liquid')game.noise(generatorProps.funnel.clone(),{radius:3,visual:2.5,source:'player',kind:'item',color:COLORS.machine,strength:.3});
+      else if(event.event==='pump'){
+        audio.play('metal_heavy',GEN_POS,{gain:.8,rate:.9+Math.random()*.2,wet:.9});
+        game.noise(GEN_POS.clone(),{radius:7,visual:6,source:'player',kind:'door',color:COLORS.machine,strength:.8});
+      }
+    }
+    const frame=hold.generator.frame;
+    generatorProps.sync(game.flags,frame);
+    const target=frame.kind==='insertFuse'?generatorProps.sockets[frame.slot]:frame.kind==='prime'?generatorProps.knob.getWorldPosition(V(0,0,0)):generatorProps.funnel;
+    vm.work={...frame,target:target.clone(),normal:V(0,0,1)};
+    const flowing=frame.kind==='pour'&&frame.k>.2&&frame.k<.86;
+    if(flowing!==pouringActive){
+      if(flowing&&!pouringLoop)pouringLoop=audio.createLoop('loop_water',generatorProps.funnel,.16,{rate:1.5,ref:.6,roll:1.5});
+      if(pouringLoop)pouringLoop.setGain(flowing?1:0,.1);
+      pouringActive=flowing;
+    }
+    if(hold.generator.done){cancelWork();startGenerator();}
+    return;
+  }
   hold.tick -= dt;
   if (hold.tick <= 0) {
-    if (hold.it.type === 'panel') {
-      // each pump of the priming lever clanks through the whole room
-      hold.tick = 1.0;
-      vm.act('pump', hold.it.pos);
-      audio.play('metal_heavy', GEN_POS, { gain: 0.8, rate: 0.9 + Math.random() * 0.2, wet: 0.9 });
-      game.noise(GEN_POS.clone(), { radius: 7, visual: 6, source: 'player', kind: 'door', color: COLORS.machine, strength: 0.8 });
-    } else {
-      hold.tick = 0.9;
-      vm.act('push', LAB_DOOR);
-      audio.play('door', LAB_DOOR, { gain: 0.18, rate: 0.7, wet: 0.4 });
-      game.noise(LAB_DOOR.clone(), { radius: 2.2, visual: 2.5, source: 'player', kind: 'door', color: COLORS.player, strength: 0.4 });
-    }
+    hold.tick = 0.9;
+    vm.act('push', LAB_DOOR);
+    audio.play('door', LAB_DOOR, { gain: 0.18, rate: 0.7, wet: 0.4 });
+    game.noise(LAB_DOOR.clone(), { radius: 2.2, visual: 2.5, source: 'player', kind: 'door', color: COLORS.player, strength: 0.4 });
   }
   if (hold.t >= HOLD[hold.it.type].need) {
-    const it = hold.it;
     hold = null;
-    if (it.type === 'panel') startGenerator();
-    else {
-      level.setDoor('lab', true);
-      game.flags.labOpen = true;
-      audio.play('door', LAB_DOOR, { gain: 0.4, rate: 0.75, wet: 0.5 });
-    }
+    level.setDoor('lab', true);
+    game.flags.labOpen = true;
+    audio.play('door', LAB_DOOR, { gain: 0.4, rate: 0.75, wet: 0.5 });
   }
 }
 
@@ -656,13 +849,22 @@ function actFor(it) {
 }
 
 function interact() {
+  if (player.fallT > 0) return;
   const it = focus;
-  if (!it) return;
-  vm.act(...actFor(it));
+  if (!it || it.taken || itemAction || hold) return;
+  if(['fuseA','fuseB','panel'].includes(it.type)&&Math.hypot(player.pos.x-it.pos.x,player.pos.z-it.pos.z)>1.15){game.hint('Подойди ближе.',2);return;}
+  if(it.type==='fuseA'||it.type==='fuseB'){beginFuse(it);return;}
   if (HOLD[it.type] && HOLD[it.type].ok()) {
     hold = { it, t: 0, tick: 0.25 };
+    if(it.type==='panel'){
+      hold.generator=new GeneratorSequence({installed:game.flags.genInstalled||0,fueled:!!game.flags.genFueled});
+      vm.actT=vm.throwT=0;
+      const frame=hold.generator.frame;
+      vm.work={...frame,target:(frame.kind==='insertFuse'?generatorProps.sockets[frame.slot]:generatorProps.funnel).clone(),normal:V(0,0,1)};
+    }else vm.act(...actFor(it));
     return;
   }
+  vm.act(...actFor(it));
   const f = game.flags;
   switch (it.type) {
     case 'note':
@@ -681,11 +883,6 @@ function interact() {
         game.hint('Камень. [ЛКМ] — бросить туда, где ты не стоишь.');
       }
       break;
-    case 'fuseA':
-      take(it);
-      f.fuseA = true;
-      releaseMonster();
-      break;
     case 'card':
       take(it);
       f.card = true;
@@ -702,26 +899,12 @@ function interact() {
       game.hint('Карта. Шлюз безэхового блока — в конце затопленного перехода.');
       saveCheckpoint();
       break;
-    case 'fuseB':
-      take(it);
-      f.fuseB = true;
-      later(1.6, () => {
-        if (!monster.active || game.state !== 'play') return;
-        const drop = V(53, 0, 15.5);
-        audio.crash(V(53, 4.3, 15.5));
-        echo.emit(V(53, 4.3, 15.5), { radius: 16, speed: 12, strength: 1.4, color: COLORS.monster });
-        monster.spawn(drop, 'wander');
-        monster.startChase();
-        game.hint('Сверху. Шлюз — и вниз, в вентканал за моргом.', 4, true);
-      });
-      game.hint('Оба ПН-2. Генераторная — к северу от атриума.');
-      saveCheckpoint();
-      break;
     case 'panel':
       if (!f.powered && f.fuseA && f.fuseB) startGenerator();
       break;
     case 'call':
-      if (f.powered && !f.called) callElevator();
+      // Let the fingertip reach the button before the motor and briefing start.
+      if (f.powered && !f.called) later(0.23, () => { if (game.state === 'play') callElevator(); });
       break;
     case 'cab':
       if (f.arrived) ending();
@@ -771,7 +954,8 @@ function interact() {
       break;
     case 'shutterA':
     case 'shutterB':
-      if (siege.active) siege.toggle(it.type === 'shutterA' ? 'A' : 'B');
+    case 'shutterC':
+      if (siege.active) siege.toggle(it.type.slice(-1));
       break;
     case 'seismo':
       if (siege.active) {
@@ -900,6 +1084,7 @@ let lift = null;
 const LIFT_POS = V(7.5, 1.4, 1.5);
 function callElevator() {
   const f = game.flags;
+  if (f.called) return;
   f.called = true;
   audio.ding(V(9.55, 1.3, 3.1));
   if (!lift) lift = audio.createMachine(LIFT_POS, { type: 'motor', gain: 0.3 });
@@ -917,7 +1102,7 @@ function liftArrive() {
   audio.ding(V(7.5, 2.4, 3.2));
   if (lift) lift.setGain(0.15, 1);
   game.noise(V(7.5, 1.5, 3.3), { radius: 22, visual: 18, source: 'machine', kind: 'machine', color: COLORS.machine, strength: 1.3 });
-  game.hint('Двери лифта открыты.', 4);
+  game.hint('Лифт здесь. В кабину — держи [E] на кнопке, пока двери не закроются.', 5, true);
 }
 
 function ending() {
@@ -1056,6 +1241,8 @@ const clearSave = () => {
 
 function restoreCheckpoint() {
   const c = game.checkpoint;
+  cancelWork();
+  resetObjective();
   timers.length = 0;
   scare = null;
   camera.fov = 80;
@@ -1063,6 +1250,7 @@ function restoreCheckpoint() {
   fx.uniforms.uGlitch.value = 0;
   fx.uniforms.uWhite.value = 0;
   game.flags = JSON.parse(JSON.stringify(c.flags));
+  generatorProps.sync(game.flags);
   player.reset(c.pos, c.yaw);
   player.stones = c.stones;
   level.items.forEach((it, i) => {
@@ -1088,12 +1276,14 @@ function restoreCheckpoint() {
   siege.stop();
   level.setShutter('A', false);
   level.setShutter('B', false);
+  level.setShutter('C', false);
   if (game.flags.called && !game.flags.arrived) {
     monster.despawn();
     siege.start();
   }
   echo.clear();
   game.fear = 0;
+  game.psychosis = 0;
   psyMem = 0;
   psyFlare = 0;
   flash = 0;
@@ -1114,10 +1304,16 @@ function pause() {
   if (game.state === 'note') closeNote();
   if (game.state !== 'play') return;
   game.state = 'paused';
+  player.keys.clear();
+  dragLook = false;
   $('pause').classList.remove('hidden');
+  $('resume').focus();
+  if (document.pointerLockElement) document.exitPointerLock();
   if (audio.ctx) audio.ctx.suspend();
 }
 function resume() {
+  front.hide();
+  player.keys.clear();
   $('pause').classList.add('hidden');
   game.state = 'play';
   if (audio.ctx) audio.ctx.resume();
@@ -1125,45 +1321,69 @@ function resume() {
 }
 $('resume').addEventListener('click', resume);
 
-$('intro').innerHTML = INTRO.map((l, i) => `<p style="animation-delay:${0.4 + i * 0.9}s">${l}</p>`).join('');
+$('intro').innerHTML = INTRO.map((l) => `<p>${l}</p>`).join('');
 
-function boot(fromSave) {
-  if (!audio.ready) {
-    $('play').disabled = true;
-    $('play').textContent = 'ЗАГРУЗКА ЗВУКА…';
-    audio.init((p) => ($('play').textContent = `ЗАГРУЗКА ЗВУКА ${Math.round(p * 100)}%`)).then(() => {
-      $('play').disabled = false;
-      $('play').textContent = 'НАЧАТЬ';
+let booting = false;
+async function boot(fromSave) {
+  if (booting) return;
+  booting = true;
+  front.loading('Загрузка звука', 'Загрузка и обработка звуковых файлов.');
+  // Give the loading UI a frame before baking the procedural sound bank.
+  await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+  try {
+    if (!audio.ready) {
+      await audio.init((p, done, total) => front.progress('Загрузка звука', p, `Звуковые записи: ${done} / ${total}`));
+    }
+    audio.setMaster(+$('vol').value, 0.01);
+    await audio.ctx.suspend();
+    front.briefing(() => {
+      if (!fromSave) clearSave();
       startGame(fromSave);
-    });
-    return;
+    }, fromSave);
+  } catch (error) {
+    console.error('Audio initialization failed', error);
+    if (audio.ctx) await audio.ctx.close().catch(() => {});
+    audio.ctx = null;
+    audio.ready = false;
+    front.fail('Звук не загрузился. Он необходим, чтобы ориентироваться в темноте. Проверьте соединение и попробуйте ещё раз.', () => boot(fromSave));
+  } finally {
+    booting = false;
   }
-  startGame(fromSave);
 }
-$('play').addEventListener('click', () => {
+function restartSession() {
   clearSave();
-  boot(false);
-});
-$('continue').addEventListener('click', () => boot(true));
-$('restart').addEventListener('click', () => {
-  clearSave();
+  try { sessionStorage.setItem('echo.new-session', '1'); } catch (_) {}
   location.reload();
+}
+front.bind({
+  newGame: () => game.checkpoint ? restartSession() : boot(false),
+  continue: () => boot(true),
+  restart: restartSession,
+  returnMenu: () => {
+    $('pause').classList.add('hidden');
+    $('hud').classList.add('hidden');
+    $('note').classList.add('hidden');
+    $('slits').classList.add('hidden');
+    player.keys.clear();
+    game.state = 'menu';
+    front.saveAvailable(!!loadSave());
+    front.menu();
+  },
 });
-$('again').addEventListener('click', () => {
-  clearSave();
-  location.reload();
-});
-if (loadSave()) $('continue').classList.remove('hidden');
-
+$('again').addEventListener('click', () => { clearSave(); location.reload(); });
 
 let waterLoop = null;
 function startGame(fromSave = false) {
+  cancelWork();
+  resetObjective();
   if (!waterLoop) {
     waterLoop = audio.createLoop('loop_water', V(49.6, 1.6, 26.8), 0.55, { ref: 1.5, roll: 1.2 });
     waterLoop.setGain(1, 2);
   }
   audio.ctx.resume();
-  $('start').classList.add('hidden');
+  front.hide();
+  $('pause').classList.add('hidden');
+  player.keys.clear();
   $('hud').classList.remove('hidden');
   const saved = fromSave ? loadSave() : null;
   if (saved) {
@@ -1174,6 +1394,7 @@ function startGame(fromSave = false) {
     game.hint('Ты снова здесь. Ничего не изменилось.', 4, true);
     return;
   }
+  echo.clear();
   player.reset(V(34.9, 0, 50.6), 0.55);
   game.state = 'play';
   game.time = 0;
@@ -1184,6 +1405,7 @@ function startGame(fromSave = false) {
     ['[F] — стук тростью. Звук ляжет на стены.', 5],
     ['Шаги тоже рисуют — и тоже слышны. [WASD]', 5],
     ['На кровати рядом — лист бумаги. [E]', 5],
+    ['Забыл, куда идти? Удерживай [TAB] — вспомнить цель.', 5],
     ['[C] — красться: тише, но и мир меньше.', 5],
   ];
   tut.forEach(([t, d]) => game.hint(t, d));
@@ -1364,7 +1586,7 @@ function updateAmbient(dt) {
   }
   // key items softly hum so they can be found
   for (const it of level.items) {
-    if (it.taken || ['stone', 'locked', 'shutterA', 'shutterB', 'seismo', 'locker', 'slam', 'clock', 'phone'].includes(it.type)) continue;
+    if (it.taken || ['stone', 'locked', 'shutterA', 'shutterB', 'shutterC', 'seismo', 'locker', 'slam', 'clock', 'phone'].includes(it.type)) continue;
     it.hum = (it.hum ?? Math.random() * 4) - dt;
     if (it.hum <= 0) {
       it.hum = 3.5 + Math.random();
@@ -1474,40 +1696,195 @@ function updateFear(dt) {
   const redK = THREE.MathUtils.smoothstep(smear, 0.35, 1.0) * 0.12;
   afterimage.uniforms.uRed.value = 1 - Math.pow(1 - redK, Math.max(0.25, dt * 60));
   fx.uniforms.uSmear.value = smear;
+  game.psychosis = smear;
 }
 let smear = 0;
 let psyMem = 0, psyFlare = 0, psyFlareT = 4;
 let eyeT = 0;
 const blurPrev = {};
 
+// The menu observes the actual level with its own camera. The player, monster,
+// triggers, save state and game clock stay frozen while this camera is active.
+const menuCamera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.05, 120);
+const menuAim = V(31.55, 1.35, 32.8);
+const menuCold = new THREE.Color(0.48, 0.67, 0.74);
+const menuWarm = new THREE.Color(0.8, 0.22, 0.13);
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const crtPointer = new THREE.Vector2();
+const crtMotion = new THREE.Vector2();
+const crtLook = { yaw: null, pitch: null, playing: false };
+addEventListener('pointermove', (event) => {
+  if (event.pointerType === 'touch') return;
+  crtPointer.set(
+    THREE.MathUtils.clamp(event.clientX / Math.max(1, innerWidth) * 2 - 1, -1, 1) * 0.028,
+    THREE.MathUtils.clamp(1 - event.clientY / Math.max(1, innerHeight) * 2, -1, 1) * 0.02,
+  );
+});
+function clearCrtPointer() { crtPointer.set(0, 0); }
+addEventListener('blur', clearCrtPointer);
+document.documentElement.addEventListener('pointerleave', clearCrtPointer);
+function updateCrtParallax(dt) {
+  const playing = game.state === 'play' || game.state === 'note';
+  crtMotion.set(0, 0);
+  if (playing && crtLook.playing && crtLook.yaw !== null) {
+    const yaw = THREE.MathUtils.euclideanModulo(player.yaw - crtLook.yaw + Math.PI, Math.PI * 2) - Math.PI;
+    crtMotion.set(
+      THREE.MathUtils.clamp(-yaw / Math.max(dt, 1 / 240) * 0.012, -0.028, 0.028),
+      THREE.MathUtils.clamp((player.pitch - crtLook.pitch) / Math.max(dt, 1 / 240) * 0.012, -0.02, 0.02),
+    );
+  }
+  crtLook.yaw = player.yaw;
+  crtLook.pitch = player.pitch;
+  crtLook.playing = playing;
+  const offset = fx.uniforms.uGlassOffset.value;
+  if (reducedMotion.matches) offset.set(0, 0);
+  else offset.lerp(playing ? crtMotion : crtPointer, 1 - Math.exp(-dt * 7));
+}
+let menuTime = 0;
+let menuPulse = 0;
+let menuWasActive = false;
+let backgroundMode = null;
+let backgroundUpdatedAt = -Infinity;
+let backgroundDirty = true;
+const menuPerformance = { worldFrames: 0, interfaceFrames: 0, lastWorldMs: 0 };
+function sizeMenuCamera() {
+  if (!innerWidth || !innerHeight) return;
+  menuCamera.aspect = innerWidth / innerHeight;
+  menuCamera.setViewOffset(innerWidth, innerHeight, -innerWidth * 0.13, 0, innerWidth, innerHeight);
+  menuCamera.updateProjectionMatrix();
+  // Only the background is downsampled. Text and the CRT stay at the user's
+  // selected display resolution so low-cost scenery does not blur the UI.
+  const scale = Math.min(1, 960 / innerWidth, 600 / innerHeight);
+  menuBackground.setSize(Math.max(1, Math.round(innerWidth * scale)), Math.max(1, Math.round(innerHeight * scale)));
+  backgroundDirty = true;
+}
+sizeMenuCamera();
+addEventListener('resize', sizeMenuCamera);
+function updateMenuBackground(dt) {
+  if (!menuWasActive) {
+    echo.clear();
+    menuPulse = 0;
+  }
+  menuTime += dt;
+  const drift = reducedMotion.matches ? 0 : Math.sin(menuTime * 0.075);
+  menuCamera.position.set(30.75 + drift * 0.12, 1.58 + (reducedMotion.matches ? 0 : Math.sin(menuTime * 0.11) * 0.025), 42.1);
+  menuCamera.lookAt(menuAim.x + drift * 0.22, menuAim.y, menuAim.z);
+  menuPulse -= dt;
+  if (menuPulse <= 0) {
+    echo.emit(V(31.4, 1.7, 39.8), { radius: 26, speed: 8, strength: 1.8, decay: 0.22, color: menuCold });
+    echo.emit(V(32.0, 1.5, 33.8), { radius: 16, speed: 5, strength: 1.2, decay: 0.28, color: menuWarm });
+    if (!menuWasActive) echo.update(2.5); // reveal the composition on its first frame
+    menuPulse = 5.5;
+  }
+  echo.update(dt);
+  dust.material.uniforms.uCam.value.copy(menuCamera.position);
+}
+function updateCachedBackground(menu, now) {
+  const mode = menu ? 'menu' : 'paused';
+  if (backgroundMode !== mode) backgroundDirty = true;
+  // Camera drift needs few world updates; the frozen pause scene needs one.
+  if (!backgroundDirty && (!menu || now - backgroundUpdatedAt < 1000 / 15 - 1)) return;
+  const target = renderer.getRenderTarget();
+  const relief = pomScale;
+  const autoClear = renderer.autoClear;
+  const start = performance.now();
+  try {
+    setRelief(0);
+    renderer.setRenderTarget(menuBackground);
+    renderer.autoClear = true;
+    renderer.render(scene, menu ? menuCamera : camera);
+    if (!menu && vm.root.visible) {
+      renderer.autoClear = false;
+      renderer.clearDepth();
+      renderer.render(vm.scene, camera);
+    }
+  } finally {
+    renderer.autoClear = autoClear;
+    renderer.setRenderTarget(target);
+    setRelief(relief);
+  }
+  backgroundMode = mode;
+  backgroundDirty = false;
+  backgroundUpdatedAt = now;
+  menuPerformance.worldFrames++;
+  menuPerformance.lastWorldMs = performance.now() - start;
+}
+function renderView(menu) {
+  crtInterface.update(performance.now());
+  fx.uniforms.uInterface.value = crtInterface.isMenu ? 1 : 0;
+  const cached = menu || game.state === 'paused' || game.state === 'dead';
+  if (cached) updateCachedBackground(menu, performance.now());
+  else {
+    backgroundMode = null;
+    backgroundDirty = true;
+  }
+  worldPass.camera = menu ? menuCamera : camera;
+  gtao.camera = menu ? menuCamera : camera;
+  vmPass.enabled = !menu;
+  afterimage.enabled = !menu;
+  const worldPasses = [worldPass, gtao, vmPass, afterimage, bloom, smaa];
+  const enabled = worldPasses.map((pass) => pass.enabled);
+  if (cached) {
+    worldPasses.forEach((pass) => { pass.enabled = false; });
+    fx.uniforms.uBlur.value.set(0, 0);
+  }
+  uiPass.enabled = cached || crtInterface.visible;
+  uiPass.uniforms.uCachedBackground.value = cached ? 1 : 0;
+  uiPass.uniforms.uShowInterface.value = crtInterface.visible ? 1 : 0;
+  // Menu pulses must not inherit the previous session's panic effects.
+  const saved = {};
+  if (menu) {
+    for (const key of ['uFear', 'uFlash', 'uGlitch', 'uWhite', 'uSmear']) {
+      saved[key] = fx.uniforms[key].value;
+      fx.uniforms[key].value = 0;
+    }
+    fx.uniforms.uBlur.value.set(0, 0);
+  } else if (menuWasActive) {
+    const target = renderer.getRenderTarget();
+    for (const buffer of [afterimage.textureOld, afterimage.textureComp]) {
+      renderer.setRenderTarget(buffer);
+      renderer.clear();
+    }
+    renderer.setRenderTarget(target);
+  }
+  try {
+    (cached ? menuComposer : composer).render();
+    if (cached) menuPerformance.interfaceFrames++;
+  } finally {
+    worldPasses.forEach((pass, index) => { pass.enabled = enabled[index]; });
+    for (const key in saved) fx.uniforms[key].value = saved[key];
+  }
+}
+
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
 function frame() {
   requestAnimationFrame(frame);
   const rdt = Math.min(0.05, clock.getDelta());
+  if (document.hidden) return;
+  const menu = game.state === 'menu';
+  if (menu && menuReady) updateMenuBackground(rdt);
   if (!window.__freeze) tick(rdt);
-  if (innerWidth > 0 && innerHeight > 0) composer.render();
+  if (innerWidth > 0 && innerHeight > 0 && (!menu || menuReady || crtInterface.visible)) renderView(menu);
+  menuWasActive = menu && menuReady;
 }
 function tick(dt) {
+  updateCrtParallax(dt);
   fx.uniforms.uTime.value += dt;
   const live = game.state === 'play' || game.state === 'note' || game.state === 'dying';
   if (live) {
     game.time += dt;
     echo.update(dt);
     player.update(dt, scene);
+    if (player.fallT > 0 && (itemAction || hold)) cancelWork();
+    player.actionLean = itemAction?.kind==='pickupFuse' ? -Math.min(.8,Math.max(0,player.eye-.8)) * THREE.MathUtils.smoothstep(itemAction.t/itemAction.duration,0,.25) * (1-THREE.MathUtils.smoothstep(itemAction.t/itemAction.duration,.55,.9)) : 0;
+    camera.position.y += player.actionLean;
+    if(player.actionLean)camera.rotation.x += player.actionLean*.22;
+    camera.updateMatrixWorld(true);
+    updateItemAction(dt);
+    updateHold(dt);
+    if(!hold?.generator)generatorProps.sync(game.flags);
     vm.root.visible = game.state !== 'dying' && !player.hidden;
-    // how far is the wall straight ahead (for the guiding hand)
-    {
-      const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
-      vm.wallDist = 9;
-      for (const d of [0.35, 0.5, 0.65, 0.8, 1.0, 1.25, 1.6]) {
-        const x = player.pos.x + fx * d, z = player.pos.z + fz * d;
-        if (!level.open(Math.floor(x), Math.floor(z)) || level.blockedPoint(x, z, 0.05)) {
-          vm.wallDist = d;
-          break;
-        }
-      }
-    }
     vm.update(dt, camera, player);
     monster.update(dt, player, game);
     if (game.state === 'dying') updateScare(dt);
@@ -1517,7 +1894,6 @@ function tick(dt) {
     updateDread(dt);
     updateListen(dt);
     updateTimers(dt);
-    updateHold(dt);
     touchCd -= dt;
     if (siege.active) siege.update(dt);
     extras.update(dt);
@@ -1528,7 +1904,7 @@ function tick(dt) {
     }
     dust.material.uniforms.uCam.value.copy(camera.position);
     audio.setListener(camera);
-    if (game.state === 'play') {
+    if (game.state === 'play' && player.fallT <= 0) {
       focus = findFocus();
       $('prompt').textContent = promptFor(focus);
       $('crosshair').classList.toggle('focus', !!focus);
@@ -1546,7 +1922,7 @@ frame();
 // debug handle
 window.__siege = siege;
 window.__game = {
-  game, player, monster, level, echo, audio, camera, vm, gtao, composer, extras,
+  game, player, monster, level, echo, audio, camera, menuCamera, vm, gtao, composer, extras, crtInterface, menuPerformance, menuBackground, menuComposer, generatorProps,
   tick(n = 1, dt = 1 / 60) {
     for (let i = 0; i < n; i++) tick(dt);
   },
@@ -1556,6 +1932,36 @@ window.__game = {
   },
   step(n = 1, dt = 1 / 60) {
     for (let i = 0; i < n; i++) tick(dt);
-    composer.render();
+    renderView(game.state === 'menu');
   },
+};
+
+// Compact browser verification hooks; world coordinates: +X east, +Z south.
+window.render_game_to_text = () => JSON.stringify({
+  screen: front.screen, mode: game.state,
+  loading: { label: $('load-label').textContent, progress: +$('load-progress').getAttribute('aria-valuenow') },
+  menuBackground: menuReady ? 'live-3d-level' : 'loading',
+  crtInterface: crtInterface.ready,
+  crtParallax: { x: +fx.uniforms.uGlassOffset.value.x.toFixed(4), y: +fx.uniforms.uGlassOffset.value.y.toFixed(4) },
+  interfaceLayer: crtInterface.layer,
+  playerMeters: document.body.classList.contains('show-player-meters'),
+  objective: { text: lastObjective, visible: $('objective').classList.contains('visible') },
+  audioReady: audio.ready, checkpoint: !!loadSave(),
+  player: { x: +player.pos.x.toFixed(2), z: +player.pos.z.toFixed(2), crouching: player.crouch, stones: player.stones, falling: player.fallT > 0, recovery: +player.fallT.toFixed(2), falls: player.falls },
+  psychosis: +game.psychosis.toFixed(2),
+  cane: { streak: player.clickStreak, quietIn: +player.clickQuietT.toFixed(2) },
+  hands: { leftVisible: vm.left.visible, pose: vm.leftHand.pose, contact: vm.contact?.type || null, point: vm.contact?.point.toArray(), normal: vm.contact?.normal.toArray() },
+  interaction: vm.work ? { kind: vm.work.kind, progress: +vm.work.k.toFixed(3), slot: vm.work.slot, can: vm.workCan.visible, stream: vm.fuelStream.visible } : null,
+  generator: { installed: game.flags.genInstalled||0, fueled: !!game.flags.genFueled, powered: !!game.flags.powered },
+  monster: { active: monster.active, state: monster.state, x: +monster.pos.x.toFixed(2), z: +monster.pos.z.toFixed(2), suspicion: +monster.suspicion.toFixed(2) },
+  siege: { active: siege.active, phase: siege.phase, stage: siege.stage, route: siege.route, power: +siege.power?.toFixed(1), stalled: siege.stalled, remaining: +siege.remaining.toFixed(1), bracing: siege.bracing, monsterInHall: siege.monsterInHall, warning: $('sg-warn').textContent },
+  coordinates: '+X east, +Z south; metres',
+});
+window.advanceTime = (ms) => {
+  const steps = Math.max(1, Math.round(ms / (1000 / 60)));
+  for (let i = 0; i < steps; i++) {
+    if (game.state === 'menu' && menuReady) updateMenuBackground(1 / 60);
+    tick(1 / 60);
+  }
+  renderView(game.state === 'menu');
 };

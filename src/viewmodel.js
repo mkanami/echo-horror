@@ -7,7 +7,12 @@
 import * as THREE from 'three';
 import { echoMaterial } from './echo.js';
 import { taper } from './organic.js';
-import { handGeometry, gripInfo } from './hands.js';
+import { gripInfo } from './hands.js';
+import { HandRig } from './hand-rig.js';
+import { HandContact } from './hand-contact.js';
+import { sampleWork } from './work-motion.js';
+import { createFuelCan, createFuse, workMaterials } from './work-props.js';
+import { Legs } from './legs.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const { lerp, clamp, smoothstep } = THREE.MathUtils;
@@ -55,27 +60,32 @@ function arm(skin, sleeve, cuff, parent) {
   const g = new THREE.Group();
   parent.add(g);
   // sleeve of a worn hospital gown: slightly baggy, with folds, rolled cuff
-  mesh(taper([V(0, 0.006, 0.66), V(0, 0.01, 0.34), V(0, 0.004, 0.075)], [0.052, 0.049, 0.043], { radial: 22, tubular: 18, noise: 0.007, noiseScale: 16 }), sleeve, g);
-  mesh(taper([V(0, 0.004, 0.105), V(0, 0.003, 0.06)], [0.046, 0.044], { radial: 22, tubular: 3, noise: 0.003, noiseScale: 30 }), cuff, g);
+  mesh(taper([V(0, 0.006, 0.5), V(0, 0.01, 0.26), V(0, 0.004, 0.07)], [0.052, 0.043, 0.034], { radial: 22, tubular: 18, noise: 0.0035, noiseScale: 22 }), sleeve, g);
+  g.cuff = mesh(taper([V(0, 0.004, 0.095), V(0, 0.003, 0.055)], [0.036, 0.034], { radial: 22, tubular: 3, noise: 0.0018, noiseScale: 30 }), cuff, g);
   return g;
 }
 
 export class ViewModel {
-  constructor() {
+  constructor(level) {
+    this.contactSolver = level ? new HandContact(level) : null;
     this.scene = new THREE.Scene();
+    this.legs = new Legs(this.scene);
     this.root = new THREE.Group();
     this.scene.add(this.root);
-    const skin = echoMaterial({ pat: 5, boost: 1.0, wet: 0.2, bump: 0.6, tint: 0xe8d4c8 });
-    const sleeve = echoMaterial({ map: 'cloth', scale: 3, boost: 0.8, tint: 0xc8d0d4 });
-    const cuff = echoMaterial({ map: 'cloth', scale: 6, boost: 0.6, tint: 0x9aa4a8 });
+    const skin = echoMaterial({ pat: 5, human: true, boost: 0.58, wet: 0.05, bump: 0.25, tint: 0xf2ded0 });
+    const nail = echoMaterial({ map: 'plastic', human: true, scale: 16, boost: 0.5, wet: 0.08, tint: 0xc9aaa0 });
+    const sleeve = echoMaterial({ map: 'cloth', scale: 3, boost: 0.45, tint: 0xc8d0d4 });
+    const cuff = echoMaterial({ map: 'cloth', scale: 6, boost: 0.4, tint: 0x9aa4a8 });
     const white = echoMaterial({ map: 'plastic', scale: 4, boost: 1.0 });
     const red = echoMaterial({ map: 'plastic', scale: 4, boost: 0.9, tint: 0xb02018 });
     const grip = echoMaterial({ map: 'rubber', scale: 6, boost: 1.0 });
-    this.mats = [skin, sleeve, cuff, white, red, grip];
+    this.mats = [skin, nail, sleeve, cuff, white, red, grip];
     for (const m of this.mats) {
       m.uniforms.uLit.value = 0.22; // a steady faint sense of your own body
       m.uniforms.uLocal.value = 1; // patterns stick to the model, they don't swim
     }
+    // Keep a faint silhouette between echoes without lighting up the arms.
+    for (const m of [skin, nail, sleeve, cuff]) m.uniforms.uLit.value = 0.12;
     white.uniforms.uLit.value = 0.35;
     red.uniforms.uLit.value = 0.3;
 
@@ -83,14 +93,16 @@ export class ViewModel {
     const gi = gripInfo();
     this.gripLocal = gi.p.clone();
     {
-      // hand-space frame: cane axis, forearm (+z) made perpendicular to it
-      const a1 = gi.axis.clone(), a2 = V(0, 0, 1).addScaledVector(a1, -a1.z).normalize(), a3 = new THREE.Vector3().crossVectors(a1, a2);
+      // The shaft is an undirected line through the palm. Its thumb/index end
+      // points UP the handle, away from the floor, not toward the cane tip.
+      const a1 = gi.axis.clone().negate(), a2 = V(0, 0, 1).addScaledVector(a1, -a1.z).normalize(), a3 = new THREE.Vector3().crossVectors(a1, a2);
       this.handFrameInv = new THREE.Matrix4().makeBasis(a1, a2, a3).invert();
     }
     this.right = new THREE.Group();
     this.root.add(this.right);
-    arm(skin, sleeve, cuff, this.right);
-    mesh(handGeometry('grip'), skin, this.right);
+    this.rightArm = arm(skin, sleeve, cuff, this.right);
+    this.rightHand = new HandRig(skin, nail, 'grip');
+    this.right.add(this.rightHand.group);
 
     // the cane lives in camera space: origin at the fist, shaft along -y
     this.cane = new THREE.Group();
@@ -109,14 +121,22 @@ export class ViewModel {
     // left arm with a hand for each thing it does
     this.left = new THREE.Group();
     this.root.add(this.left);
-    arm(skin, sleeve, cuff, this.left);
-    this.leftHands = {};
-    for (const pose of ['open', 'relaxed', 'cover']) {
-      const h = mesh(handGeometry(pose), skin, this.left);
-      h.scale.x = -1;
-      h.visible = false;
-      this.leftHands[pose] = h;
-    }
+    this.leftArm = arm(skin, sleeve, cuff, this.left);
+    this.leftHand = new HandRig(skin, nail);
+    this.leftHand.group.scale.x = -1;
+    this.left.add(this.leftHand.group);
+    const upper = () => mesh(taper([V(0, 0, 0), V(0, 0, 0.2), V(0, 0, 0.4)], [0.052, 0.059, 0.066], { radial: 22, tubular: 10, noise: 0.003, noiseScale: 16 }), sleeve, this.root);
+    this.rightUpper = upper();
+    this.leftUpper = upper();
+    const workMats = workMaterials(true);
+    this.workCan = createFuelCan(workMats);
+    this.workFuse = createFuse(workMats);
+    this.root.add(this.workCan, this.workFuse);
+    this.workCan.visible = this.workFuse.visible = false;
+    this.mats.push(...Object.values(workMats));
+    this.fuelStream = new THREE.Group();this.root.add(this.fuelStream);
+    for (let i=0;i<9;i++) mesh(new THREE.CylinderGeometry(.0032,.004,1,8),workMats.fuel,this.fuelStream);
+    this.fuelStream.visible = false;
 
     // things the left hand can hold (in the curled 'relaxed' hand)
     const paper = echoMaterial({ map: 'paperw', scale: 6, boost: 1.1 });
@@ -174,6 +194,7 @@ export class ViewModel {
   // 'read' (a note), 'push' (doors, lockers), 'press' (buttons, panels),
   // 'rattle' (a locked handle), 'pump' (the priming lever)
   act(kind, target, item = null) {
+    if (this.work) return;
     const DUR = { take: 1.05, read: 1.5, push: 0.62, press: 0.5, rattle: 0.95, pump: 0.95 };
     this.actK = kind;
     this.actD = DUR[kind] || 0.6;
@@ -241,7 +262,7 @@ export class ViewModel {
         const jab = Math.sin(clamp((k - 0.35) / 0.25, 0, 1) * Math.PI) * 0.035;
         const ret = ease(0.6, 1);
         const pos = rest.clone().lerp(tgt, out).add(toTgt.clone().multiplyScalar(jab)).lerp(rest, ret);
-        return { pose: 'open', pos, fingers: toTgt.clone().add(V(0, 0.35, 0)).normalize(), back: V(-0.2, 0.6, 0.8) };
+        return { pose: 'point', pos, fingers: toTgt.clone().add(V(0, 0.1, 0)).normalize(), back: V(-0.2, 0.6, 0.8) };
       }
       case 'rattle': {
         const out = ease(0, 0.3);
@@ -269,10 +290,26 @@ export class ViewModel {
   }
 
   showLeft(pose) {
-    for (const k in this.leftHands) this.leftHands[k].visible = k === pose;
+    this.leftHand.setPose(pose, this.handDt || 1 / 60);
   }
 
   update(dt, camera, player) {
+    player.braceContact = null;
+    this.legs.update(dt, player, this.root.visible);
+    this.handDt = dt;
+    if (!this.contactSolver) this.contactSolver = new HandContact(player.level);
+    if (this.lastPosition && this.lastPosition.distanceToSquared(player.pos) > 4) {
+      this.leftW = this.touchK = 0;
+      this.lastContact = this.contactSolver.last = null;
+      this.leftPos = null;
+      this.leftSpring.init = false;
+      this.leftSpring.v.set(0, 0, 0);
+      this.sway.x.set(0, 0, 0);
+      this.sway.v.set(0, 0, 0);
+      this.lastYaw = player.yaw;
+      this.lastPitch = player.pitch;
+    }
+    (this.lastPosition ||= new THREE.Vector3()).copy(player.pos);
     this.t += dt;
     // follow the camera exactly (world space, so echo lighting is correct)
     this.root.position.copy(camera.position);
@@ -318,6 +355,12 @@ export class ViewModel {
     const breath = Math.sin(this.t * (1.9 + tired * 2.4)) * (0.003 + tired * 0.008) * (player.holding ? 0.2 : 1);
     const tr = fear * fear * 0.004 + (player.holding ? smoothstep(player.holdT || 0, 3, 8) * 0.004 : 0);
     const trem = V(Math.sin(this.t * 37) * tr + Math.sin(this.t * 23.3) * tr * 0.6, Math.sin(this.t * 41.7) * tr, 0);
+    this.contact = !player.hidden && !player.running ? this.contactSolver.sample(camera, player) : null;
+    if (player.hidden || player.running) {
+      this.contactSolver.last = null;
+      this.contactSolver.forwardDistance = 9;
+    }
+    this.wallDist = this.contactSolver.forwardDistance ?? 9;
 
     // ---------------------------------------------------------- right hand + cane
     // tap: lift then strike
@@ -337,10 +380,19 @@ export class ViewModel {
       -0.43 + this.runK * 0.05 - Math.abs(pump) * 0.4,
     );
     if (player.holding) hand.y -= 0.025; // tensed, held close
+    const retract = 1 - smoothstep(this.wallDist, 0.32, 0.85);
+    hand.z += retract * 0.22;
+    hand.y -= retract * 0.045;
     hand.add(body);
+    const camInv = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
+    const work = this.work ? sampleWork(this.work,camInv) : null;
+    this.workK = lerp(this.workK || 0,work?1:0,1-Math.exp(-dt*12));
+    hand.y -= this.workK * 0.4;
+    // Resting arms follow the torso's yaw. Looking down must not pull the
+    // wrist into the chest or turn the sleeve through the other hand.
+    hand.applyAxisAngle(V(0, 1, 0), player.yaw).add(camera.position).applyMatrix4(camInv);
     this.right.position.copy(hand);
     // the floor point the tip goes for: on the ground ahead, at cane's length
-    const camInv = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
     const handW = hand.clone().applyMatrix4(this.root.matrixWorld);
     const tipY = 0.03 + arcLift + tapLift * 1.1 + this.runK * 0.25;
     const h = Math.max(0.3, handW.y - tipY);
@@ -354,24 +406,56 @@ export class ViewModel {
     // hand, the cane axis and the forearm; in view, where the cane must point and
     // where the forearm should run (back to the lower right corner)
     const dirC = tipC.clone().sub(hand).normalize();
-    const fore = V(0.45, -0.42 - this.runK * 0.15, 0.78).normalize();
+    const elbow = (side) => V(side * 0.3, Math.max(0.2, Math.min(player.eye, 1.65) - 0.6 + (player.actionLean || 0)), 0.12).applyAxisAngle(V(0, 1, 0), player.yaw).add(V(player.pos.x, 0, player.pos.z)).applyMatrix4(camInv);
+    const fore = elbow(1).sub(hand).normalize();
     const b1 = dirC, b2 = fore.addScaledVector(b1, -fore.dot(b1)).normalize(), b3 = new THREE.Vector3().crossVectors(b1, b2);
     const B = new THREE.Matrix4().makeBasis(b1, b2, b3);
     this.right.quaternion.setFromRotationMatrix(B.multiply(this.handFrameInv));
+    this.rightHand.setPose('grip', dt);
     const gripC = this.gripLocal.clone().applyQuaternion(this.right.quaternion).add(hand);
     const caneDir = tipC.sub(gripC).normalize();
     this.cane.position.copy(gripC);
     this.cane.quaternion.setFromUnitVectors(V(0, -1, 0), caneDir);
+    this.cane.visible = this.workK < 0.85;
+    if (work?.right) {
+      this.right.position.lerp(work.right.pos,this.workK);
+      this.right.quaternion.slerp(work.right.q,this.workK);
+      this.rightHand.setPose(work.right.pose,dt);
+    }
+    this.workCan.visible = !!work?.can;
+    this.workFuse.visible = !!work?.fuse?.visible;
+    this.fuelStream.visible = !!work?.can?.flow;
+    if (work?.fuse) {this.workFuse.position.copy(work.fuse.pos);this.workFuse.quaternion.copy(work.fuse.q);}
+    if (work?.can) {
+      const c=work.can;
+      this.workCan.position.copy(c.pos);this.workCan.quaternion.copy(c.q);
+      this.workCan.cap.visible=c.capVisible;
+      this.workCan.cap.position.copy(this.workCan.capHome).addScaledVector(this.workCan.capAxis,c.capAway*.075);
+      this.workCan.cap.rotateY(dt*7);
+      const start=this.workCan.spout.position.clone().applyQuaternion(c.q).add(c.pos);
+      const point=(t)=>start.clone().lerp(c.end,t).add(V(Math.sin(t*8+this.t*13)*Math.sin(t*Math.PI)*.003*c.flow,-Math.sin(t*Math.PI)*.018,0));
+      this.fuelStream.children.forEach((o,i)=>{const a=point(i/9),b=point((i+1)/9),d=b.clone().sub(a);o.position.copy(a).add(b).multiplyScalar(.5);o.quaternion.setFromUnitVectors(V(0,1,0),d.clone().normalize());o.scale.set(c.flow,d.length(),c.flow);});
+    }
 
     // ---------------------------------------------------------- left hand
     if (this.actT > 0) this.actT = Math.max(0, this.actT - dt);
     if (this.throwT > 0) this.throwT = Math.max(0, this.throwT - dt);
     const wd = this.wallDist ?? 9;
-    const wall = !player.running && !player.hidden && (this.touching ? wd < 0.95 : wd < 0.75);
+    const wall = !!this.contact && !work && !player.holding && !player.listening && this.actT <= 0 && this.throwT <= 0;
     this.touchK = lerp(this.touchK || 0, wall ? 1 : 0, Math.min(1, dt * 5));
+    if (wall && this.touchK > 0.65 && this.contact.normal.y < 0.5) player.braceContact = this.contact;
 
     let pose = null, pos = null, fingers = null, back = null;
-    if (this.throwT > 0) {
+    if (player.fallT > 0) {
+      pose = 'open';
+      const height = lerp(Math.max(0.16, player.eye - 0.35), 0.16, player.fallK);
+      pos = V(-0.28, height, -0.32).applyAxisAngle(V(0, 1, 0), player.yaw).add(player.pos).applyMatrix4(camInv);
+      fingers = V(0, -0.15, -1).applyAxisAngle(V(0, 1, 0), player.yaw).transformDirection(camInv);
+      back = V(0, 1, 0).transformDirection(camInv);
+    } else if (work?.left) {
+      pose=work.left.pose;pos=work.left.pos;
+      this.leftQ.copy(work.left.q);
+    } else if (this.throwT > 0) {
       // underarm lob: from low behind to out in front, fingers opening at release
       const k = 1 - this.throwT / 0.45;
       const s = smoothstep(k, 0, 0.55);
@@ -395,12 +479,17 @@ export class ViewModel {
       back = V(-1, 0, 0.35);
       pose = 'cover';
     } else if (this.touchK > 0.05) {
-      // palm flat on the surface ahead, fingers up
-      const tz = clamp(wd - 0.06, 0.3, 0.6);
-      pos = V(-0.2, lerp(-0.5, -0.14, this.touchK), lerp(-0.3, -tz, this.touchK));
-      fingers = V(0.18, 0.95, -0.25);
-      back = V(-0.1, 0.05, 1);
-      pose = 'open';
+      const contact = this.contact || this.lastContact;
+      if (contact) {
+        // Palm pad rests on the sampled face; MCP joints sit at the corner
+        // when wrapping, so the phalanges close around its far side.
+        const wrist = contact.point.clone().addScaledVector(contact.normal, 0.022).addScaledVector(contact.fingers, -0.055);
+        pos = wrist.applyMatrix4(camInv);
+        fingers = contact.fingers.clone().transformDirection(camInv);
+        back = contact.normal.clone().transformDirection(camInv);
+        pose = contact.pose;
+        this.lastContact = contact;
+      }
     } else if (this.runK > 0.4) {
       // pumping
       const ph = Math.sin(this.sweepPh + Math.PI);
@@ -421,7 +510,7 @@ export class ViewModel {
     if (pose) {
       this.leftPose = pose;
       this.leftPos = pos;
-      this.leftQ.slerp(handQuat(fingers, back), this.leftW < 0.1 ? 1 : Math.min(1, dt * 14));
+      if (!work) this.leftQ.slerp(handQuat(fingers, back), this.leftW < 0.1 ? 1 : Math.min(1, dt * 14));
     }
     let heldKey = null;
     if (this.actT > 0) {
@@ -435,16 +524,61 @@ export class ViewModel {
     if (shown) {
       this.showLeft(this.leftPose);
       // drops out of view below the frame when not in use
-      const target = this.leftPos.clone().add(V(sw.x * 0.5, sw.y * 0.4 - (1 - this.leftW) * 0.35, 0)).add(trem).add(body);
-      if (this.leftW > 0.5 && !this.leftSpring.init) {
+      const planted = wall && this.touchK > 0.65;
+      const target = this.leftPos.clone().add(V(sw.x * 0.5, sw.y * 0.4 - (1 - this.leftW) * 0.35, 0).multiplyScalar(planted ? 0 : 1)).add(trem.clone().multiplyScalar(planted ? 0.1 : 1)).add(body.clone().multiplyScalar(planted ? 0 : 1));
+      if (!this.leftSpring.init) {
         this.leftSpring.x.copy(target);
         this.leftSpring.init = true;
       }
-      this.left.position.copy(this.leftSpring.step(target, dt));
+      if (work) {this.left.position.copy(pos);this.leftSpring.x.copy(pos);this.leftSpring.v.set(0,0,0);}
+      else this.left.position.copy(this.leftSpring.step(target, dt));
       this.left.quaternion.copy(this.leftQ);
     } else this.leftSpring.init = false;
 
     this.root.updateMatrixWorld(true);
+    if (wall && shown) {
+      // Keep the finger pads outside solid geometry even while pose/spring
+      // interpolation is still catching up to a newly encountered corner.
+      for (const chain of this.leftHand.digits) {
+        for (let j = 1; j <= 3; j++) {
+          // Recompute after every correction: translating the wrist moves all
+          // remaining pads too, so stale points would over-correct the hand.
+          const p = j < 3 ? chain[j].getWorldPosition(new THREE.Vector3()) : V(0, 0, -0.02).applyMatrix4(chain[2].matrixWorld);
+          const correction = this.contactSolver.pushOut(p);
+          if (correction.lengthSq() < 1e-8) continue;
+          const local = correction.applyQuaternion(this.root.quaternion.clone().invert());
+          this.left.position.add(local);
+          this.leftSpring.x.copy(this.left.position);
+          this.left.updateMatrixWorld(true);
+        }
+      }
+    }
+    // Fit each sleeve to its actual elbow. A fixed 66 cm tube continued past
+    // the elbow and crossed the camera/other wrist on close reaches.
+    const fitArm = (wrist, sleeve, rig, side) => {
+      const elbowC = elbow(side);
+      const toElbow = elbowC.clone().sub(wrist.position).applyQuaternion(wrist.quaternion.clone().invert());
+      const distance = toElbow.length();
+      toElbow.normalize();
+      if (side < 0) toElbow.x *= -1;
+      rig.setForearm(toElbow, dt);
+      const current = V(0, 0, 1).applyQuaternion(rig.forearm.quaternion);
+      if (side < 0) current.x *= -1;
+      // Cloth and skin share the same smoothed forearm direction, including
+      // the first frame of a reach; otherwise the cuff detaches from the skin.
+      sleeve.quaternion.setFromUnitVectors(V(0, 0, 1), current);
+      sleeve.scale.z = clamp(distance / 0.5, 0.35, 1.4);
+      sleeve.cuff.scale.z = 1 / sleeve.scale.z;
+      const upper = side > 0 ? this.rightUpper : this.leftUpper;
+      const shoulder = V(side * 0.19, player.eye - 0.2 + (player.actionLean || 0), 0.13).applyAxisAngle(V(0, 1, 0), player.yaw).add(V(player.pos.x, 0, player.pos.z)).applyMatrix4(camInv);
+      const toShoulder = shoulder.sub(elbowC);
+      upper.position.copy(elbowC);
+      upper.quaternion.setFromUnitVectors(V(0, 0, 1), toShoulder.clone().normalize());
+      upper.scale.z = toShoulder.length() / 0.4;
+    };
+    fitArm(this.right, this.rightArm, this.rightHand, 1);
+    this.leftUpper.visible = !!shown;
+    if (shown) fitArm(this.left, this.leftArm, this.leftHand, -1);
     if (wall && !this.touching && this.touchK > 0.6 && this.onTouch) this.onTouch(this.left.getWorldPosition(new THREE.Vector3()));
     this.touching = wall && this.touchK > 0.6;
   }

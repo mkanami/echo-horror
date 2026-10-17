@@ -6,6 +6,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { echoMaterial, echoPoints } from './echo.js';
 import * as P from './props.js';
 import { woodLeaf, steelLeaf, liftLeaf, doorFrame, ease } from './doors.js';
+import { createFuse, workMaterials } from './work-props.js';
 
 export const W = 64;
 export const H = 56;
@@ -51,6 +52,7 @@ const SURF = {
   'Лифт': { wall: 'w_plates', floor: 'f_dplate', ceil: 'c_concrete' },
   'Вентканал': { wall: 'w_steel2', floor: 'f_grate', ceil: 'c_concrete' },
   'Вентшахта': { wall: 'w_steel2', floor: 'f_grate', ceil: 'c_concrete' },
+  'Обход лифтового холла': { wall: 'w_bunker', floor: 'f_grate', ceil: 'c_concrete' },
 };
 
 export class Level {
@@ -117,6 +119,11 @@ export class Level {
     this.carve(7, 13, 1, 3, F.METAL, 1.25, 'Вентшахта');
     this.carve(8, 15, 15, 1, F.METAL, 1.25, null);
     this.carve(22, 14, 1, 2, F.METAL, 1.25, null);
+    // A real third entrance: a narrow service passage around the west wall.
+    // A solid wall separates it from the hall except at the shutter opening.
+    this.carve(1, 7, 2, 9, F.METAL, 2.8, 'Обход лифтового холла');
+    this.carve(3, 7, 1, 3, F.METAL, 2.8, null);
+    this.carve(3, 14, 4, 2, F.METAL, 2.8, null);
     // puddles in the morgue and corridor B
     for (const [i, j] of [[31, 41], [32, 41], [31, 42], [38, 39], [39, 39], [38, 40]]) this.cells[j * W + i] = F.WATER;
     // broken glass spilling into the airlock
@@ -746,13 +753,17 @@ export class Level {
     // ===== lift hall defences: shutter housing over door A, vent hatch B, control panels
     B.box(12.9, 3.15, 8.5, 0.12, 0.7, 3.2, { collide: false, key: 'iron' });
     for (const z of [6.94, 10.06]) B.box(12.93, 1.4, z, 0.1, 2.8, 0.1, { collide: false, key: 'iron' });
+    B.box(4.08, 3.15, 8.5, 0.12, 0.7, 3.2, { collide: false, key: 'iron' });
+    for (const z of [6.94, 10.06]) B.box(4.07, 1.4, z, 0.1, 2.8, 0.1, { collide: false, key: 'iron' });
     for (const [x, y, w, h] of [[7.5, 0.84, 1.0, 0.06], [7.5, 0.0, 1.0, 0.04], [7.0, 0.42, 0.05, 0.86], [8.0, 0.42, 0.05, 0.86]]) B.box(x, y, 12.97, w, h, 0.06, { collide: false, key: 'iron', walk: true });
     for (const x of [6.95, 8.05]) B.box(x, 1.0, 12.94, 0.05, 2.0, 0.05, { collide: false, key: 'iron', walk: true });
     // panels
     B.box(12.95, 1.3, 6.4, 0.06, 0.4, 0.3, { collide: false, key: 'paint' });
     B.box(6.5, 1.25, 12.95, 0.3, 0.4, 0.06, { collide: false, key: 'paint' });
+    B.box(4.05, 1.3, 10.6, 0.06, 0.4, 0.3, { collide: false, key: 'paint' });
     P.sign(B.at(12.96, 1.62, 6.4, -Math.PI / 2), 0.3, 0.1);
     P.sign(B.at(6.5, 1.57, 12.96, Math.PI), 0.3, 0.1);
+    P.sign(B.at(4.04, 1.62, 10.6, Math.PI / 2), 0.3, 0.1);
 
     // ===== the dead from the orderly's log: palms pressed over their mouths
     P.corpse(B.at(0, 0, 0), 22.4, 0.0, 27.7, { pose: 'mouth', ry: 1.45 });
@@ -946,7 +957,7 @@ export class Level {
     const mat = this.mat.item, lm = this.lineMat.item;
     const paperMat = echoMaterial({ map: 'paperw', scale: 4, boost: 2.2, tint: 0xfff6e0 });
     const add = (type, pos, parts, extra = {}) => {
-      const obj = makeObject(parts, type === 'note' ? paperMat : mat, lm);
+      const obj = parts.isObject3D ? parts : makeObject(parts, type === 'note' ? paperMat : mat, lm);
       obj.position.copy(pos);
       this.scene.add(obj);
       const it = { type, pos: pos.clone(), obj, taken: false, ...extra };
@@ -954,11 +965,8 @@ export class Level {
       return it;
     };
     const paper = () => [{ geo: new THREE.BoxGeometry(0.21, 0.006, 0.297), rot: [0, 0.3, 0] }];
-    const fuse = () => [
-      { geo: new THREE.CylinderGeometry(0.035, 0.035, 0.16, 8), rot: [0, 0, Math.PI / 2] },
-      { geo: new THREE.CylinderGeometry(0.045, 0.045, 0.03, 8), pos: [0.08, 0, 0], rot: [0, 0, Math.PI / 2] },
-      { geo: new THREE.CylinderGeometry(0.045, 0.045, 0.03, 8), pos: [-0.08, 0, 0], rot: [0, 0, Math.PI / 2] },
-    ];
+    const fuseMats = workMaterials();
+    const fuse = () => createFuse(fuseMats);
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
     add('note', V(36.25, 0.69, 50.15), paper(), { note: 0 });
@@ -1028,6 +1036,10 @@ export class Level {
     shB.position.set(7.5, 0.47, 12.955);
     this.scene.add(shB);
     this.doors.push({ id: 'shB', kind: 'shutter', closed: false, t: 0, obj: shB, y0: 0.47, rise: 1.0, speed: 1.3, box: null, boxClosed: { minX: 7, maxX: 8, minZ: 12.9, maxZ: 13.02 } });
+    const shC = slab(3.0, 2.8);
+    shC.position.set(4.03, 1.4, 8.5);
+    this.scene.add(shC);
+    this.doors.push({ id: 'shC', kind: 'shutter', closed: false, t: 0, obj: shC, y0: 1.4, rise: 2.75, speed: 0.9, box: null, boxClosed: { minX: 3.98, maxX: 4.08, minZ: 7, maxZ: 10 } });
     for (const [x, z, ry, n, idx] of LOCKER_ROWS)
       for (const i of idx) {
         const lx = (i - (n - 1) / 2) * 0.5;
@@ -1037,6 +1049,7 @@ export class Level {
       }
     this.items.push({ type: 'shutterA', pos: new THREE.Vector3(12.9, 1.3, 6.4), obj: new THREE.Object3D(), taken: false });
     this.items.push({ type: 'shutterB', pos: new THREE.Vector3(6.5, 1.25, 12.9), obj: new THREE.Object3D(), taken: false });
+    this.items.push({ type: 'shutterC', pos: new THREE.Vector3(4.1, 1.3, 10.6), obj: new THREE.Object3D(), taken: false });
     this.items.push({ type: 'seismo', pos: new THREE.Vector3(10.0, 1.3, 11.4), obj: new THREE.Object3D(), taken: false });
 
     // airlock: two riveted steel leaves on hinges, swinging out into the corridor
@@ -1153,7 +1166,7 @@ export class Level {
   }
 
   setShutter(which, closed) {
-    const d = this.door(which === 'A' ? 'shA' : 'shB');
+    const d = this.door(`sh${which}`);
     if (d.closed === closed) return;
     d.closed = closed;
     // motor whine, then the slats bottom out
@@ -1408,7 +1421,7 @@ export class Level {
     while (k < pts.length - 1) {
       let far = k + 1;
       for (let m = pts.length - 1; m > k + 1; m--) {
-        if (this.navLine(pts[k], pts[m])) { far = m; break; }
+        if (this.navLine(pts[k], pts[m], av)) { far = m; break; }
       }
       out.push(pts[far]);
       k = far;
@@ -1416,7 +1429,7 @@ export class Level {
     return out;
   }
 
-  navLine(a, b) {
+  navLine(a, b, avoid = null) {
     const d = a.distanceTo(b);
     const n = Math.ceil(d / 0.1);
     // don't shortcut along walls: a straight run must keep the clearance its ends have
@@ -1424,6 +1437,7 @@ export class Level {
     for (let s = 1; s < n; s++) {
       const t = s / n;
       const [i, j] = this.navCell(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t);
+      if (avoid && i >= avoid[0] && i < avoid[1] && j >= avoid[2] && j < avoid[3]) return false;
       if (!this.walkable(i, j)) return false;
       if (need > 0 && this.navDist[j * this.NW + i] < need) return false;
     }

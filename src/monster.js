@@ -314,7 +314,7 @@ export class Monster {
     const prox = 1 - d / reach;
     const pd = playerPos ? Math.hypot(playerPos.x - this.pos.x, playerPos.z - this.pos.z) : 99;
     if (source === 'player') {
-      const w = { step: 0.35, run: 0.7, click: 0.5, breath: 0.6, gasp: 1.2, crouch: 0.25, door: 0.6, item: 0.3 }[kind] ?? 0.4;
+      const w = { step: 0.35, run: 0.7, click: 0.5, breath: 0.6, gasp: 1.2, fall: 1.2, crouch: 0.25, door: 0.6, item: 0.3 }[kind] ?? 0.4;
       this.suspicion = Math.min(1.5, this.suspicion + w * (0.5 + prox));
       if (this.state === 'recover') return true;
       if (pd < 3.4) {
@@ -328,7 +328,7 @@ export class Monster {
     }
     if (this.state === 'recover') return true;
     // close and certain: it comes running for you
-    if (source === 'player' && pd < 11 && this.suspicion > 0.5 && ['run', 'step', 'click', 'door', 'gasp'].includes(kind) && this.state !== 'chase') {
+    if (source === 'player' && pd < 11 && this.suspicion > 0.5 && ['run', 'step', 'click', 'door', 'gasp', 'fall'].includes(kind) && this.state !== 'chase') {
       this.startChase();
       return true;
     }
@@ -648,7 +648,7 @@ export class Monster {
         break;
       case 'windup':
         this.speed = 0;
-        if (this.stateT > (this.lunge && this.lunge.fast ? 0.55 : 1.05)) {
+        if (this.stateT > (this.lunge && this.lunge.fast ? 0.25 : 0.45)) {
           this.setState('lunge');
           this.lunge.t = 0;
           this.audio.monsterRoar(this.headWorld);

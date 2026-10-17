@@ -53,23 +53,30 @@ export class AudioEngine {
   }
 
   async loadSamples(onProgress) {
-    const man = await (await fetch('sfx/manifest.json')).json();
+    const response = await fetch('sfx/manifest.json');
+    if (!response.ok) throw new Error(`Sound manifest: HTTP ${response.status}`);
+    const man = await response.json();
     const jobs = [];
     for (const name in man) for (const file of man[name]) jobs.push([name, file]);
     let done = 0;
+    const failed = [];
     await Promise.all(
       jobs.map(async ([name, file]) => {
         try {
-          const ab = await (await fetch('sfx/' + file)).arrayBuffer();
+          const response = await fetch('sfx/' + file);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const ab = await response.arrayBuffer();
           const buf = await this.ctx.decodeAudioData(ab);
           (this.bank[name] ||= []).push(buf);
         } catch (e) {
           console.warn('sfx failed', file, e);
+          failed.push(file);
         }
         done++;
-        if (onProgress) onProgress(done / jobs.length);
+        if (onProgress) onProgress(done / jobs.length, done, jobs.length);
       }),
     );
+    if (failed.length) throw new Error(`${failed.length} sound samples failed to load`);
   }
 
   get t() {
@@ -188,6 +195,11 @@ export class AudioEngine {
   }
   gasp() {
     this.play('breath_heavy', null, { gain: 0.5, wet: 0.3, rate: 1.05, lp: 5000 });
+  }
+  bodyFall(pos, surface) {
+    this.play('flesh', pos, { gain: 0.75, rate: 0.65, vary: 0.06, wet: 0.4, lp: 2200 });
+    this.play(SURF[surface] || 'step_tile', pos, { gain: 0.5, rate: 0.65, wet: 0.3 });
+    this.gasp();
   }
   heartbeat(intensity) {
     this.play('heart', null, { gain: 0.3 + intensity * 0.9, wet: 0, vary: 0.02, lp: 900 });

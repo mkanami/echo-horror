@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 
 export const MAXP = 40;
+const REVEAL_RISE = 0.45;
+const FRONT_STRENGTH = 0.18;
 
 const shared = {
   uTime: { value: 0 },
@@ -27,19 +29,28 @@ export const COLORS = {
 };
 
 const VERT = /* glsl */ `
+  #include <common>
+  #include <color_pars_vertex>
+  #include <skinning_pars_vertex>
   varying vec3 vW;
   varying vec3 vN;
   varying vec2 vUv;
   varying vec3 vO;
   varying vec3 vNo;
   void main() {
+    #include <color_vertex>
+    vec3 transformed = position;
+    vec3 objectNormal = normal;
+    #include <skinbase_vertex>
+    #include <skinnormal_vertex>
+    #include <skinning_vertex>
     vUv = uv;
     vO = position;
-    vNo = normal;
-    vec4 w = modelMatrix * vec4(position, 1.0);
+    vNo = objectNormal;
+    vec4 w = modelMatrix * vec4(transformed, 1.0);
     vW = w.xyz;
     #ifdef SURFACE
-      vN = normalize(mat3(modelMatrix) * normal);
+      vN = normalize(mat3(modelMatrix) * objectNormal);
     #else
       vN = vec3(0.0, 1.0, 0.0);
     #endif
@@ -48,6 +59,7 @@ const VERT = /* glsl */ `
 `;
 
 const FRAG = /* glsl */ `
+  #include <color_pars_fragment>
   #define MAXP ${MAXP}
   uniform vec4 uP[MAXP];
   uniform float uN;
@@ -59,6 +71,7 @@ const FRAG = /* glsl */ `
   uniform float uBoost;
   uniform float uPat;
   uniform float uLit;
+  uniform float uHuman;
   uniform sampler2D uTex;
   uniform sampler2D uNrm;
   uniform float uScale;
@@ -222,6 +235,13 @@ const FRAG = /* glsl */ `
         vec3 grad = vec3(vnoise((pW + vec3(e, 0, 0)) * 30.0) - h0, vnoise((pW + vec3(0, e, 0)) * 30.0) - h0, vnoise((pW + vec3(0, 0, e)) * 30.0) - h0) / e * 0.6;
         N = normalize(n - (grad - dot(grad, n) * n) * 0.02 * uBump);
         rough = mix(0.75, 0.3, uWet * smoothstep(0.35, 0.7, fbm(pW * 5.0 + 7.0)));
+        if (uHuman > 0.5) {
+          // Living hands: subtle pores/colour, without the creature's wet mottling.
+          float pores = vnoise(pW * 240.0);
+          float tone = vnoise(pW * 35.0);
+          albedo = mix(vec3(0.42, 0.285, 0.23), vec3(0.51, 0.355, 0.29), tone) * (0.97 + pores * 0.035);
+          rough = 0.69 + pores * 0.06;
+        }
       } else {
         // glass
         albedo = vec3(0.03);
@@ -229,6 +249,9 @@ const FRAG = /* glsl */ `
       }
     #endif
 
+    #ifdef USE_COLOR
+      albedo *= vColor;
+    #endif
     vec3 acc = vec3(0.0);
     vec3 edge = vec3(0.0);
     for (int i = 0; i < MAXP; i++) {
@@ -245,21 +268,19 @@ const FRAG = /* glsl */ `
       float d = length(Lv);
       if (d > Q.x) continue;
       vec3 L = Lv / max(d, 1e-3);
-      float r = age * Q.y;
-      float tSince = age - d / Q.y;
       // gentle falloff: far surfaces fade out gradually instead of dropping off a cliff
-      float f = pow(clamp(1.0 - d / Q.x, 0.0, 1.0), 0.7);
-      float fr = (d - r) / 0.4;
-      float front = exp(-fr * fr);
-      // afterglow: a quick fade, then a long dim memory of the shape
-      float trail = tSince > 0.0 ? exp(-tSince * Q.w) * 0.95 + exp(-tSince * Q.w * 0.38) * 0.05 : 0.0;
+      float f = 1.0 - smoothstep(0.0, Q.x, d);
+      // Soft area fade, with a faint, broad travelling line on top.
+      float onset = smoothstep(0.0, ${REVEAL_RISE}, age);
+      float fadeAge = max(0.0, age - ${REVEAL_RISE}) * Q.w;
+      float trail = exp(-fadeAge * fadeAge);
+      float frontOffset = (d - age * Q.y) / 1.0;
+      float front = exp(-frontOffset * frontOffset);
+      float frontFade = smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.6, 1.0, age * Q.y / Q.x));
       // light colour: mostly cold white, a hint of the source's hue
       vec3 c = uC[i];
       c = mix(vec3(dot(c, vec3(0.3, 0.5, 0.2))), c, 0.4 + 0.4 * step(0.8, c.r - c.g));
-      // the wave first draws the bare structure (edges, vertices); the
-      // surface fills in a moment behind it
-      float solid = smoothstep(0.0, 0.42, tSince);
-      float wave = (front * 0.32 + trail * 0.75 * mix(0.18, 1.0, solid)) * f * Q.z;
+      float wave = (onset * trail * 0.6 + front * frontFade * ${FRONT_STRENGTH}) * f * Q.z;
       #ifdef SURFACE
         // wrapped diffuse + a little bounce: the side turned away is dim, not black,
         // and the edge between light and shade is soft
@@ -271,9 +292,8 @@ const FRAG = /* glsl */ `
         float fres = uPat > 0.5 && uPat < 1.5 ? pow(1.0 - max(dot(N, V), 0.0), 4.0) * 0.5 : 0.0;
         acc += c * wave * (dif * albedo + spec * 0.5 + fres);
       #else
-        float sketch = front + (tSince > 0.0 ? exp(-tSince * 5.5) * 0.85 : 0.0);
-        edge += c * sketch * f * Q.z;
-        acc += c * trail * f * Q.z * 0.15 * max(uBoost - 1.5, 0.0);
+        edge += c * wave;
+        acc += c * wave * 0.15 * max(uBoost - 1.5, 0.0);
       #endif
     }
 
@@ -293,6 +313,13 @@ const FRAG = /* glsl */ `
         float dif = pow(max(dot(N, L), 0.0), 1.4);
         vec3 H = normalize(L + V);
         litTerm = uLit * (albedo * (0.05 + dif * 1.4) + pow(max(dot(N, H), 0.0), 40.0) * 0.6);
+        if (uHuman > 0.5) {
+          // Soft light above the player gives tendons/knuckles volume even
+          // between echoes, without the creature's harsh wet under-light.
+          L = normalize(cameraPosition + vec3(-0.45, 0.8, 0.3) - vW);
+          H = normalize(L + V);
+          litTerm = uLit * (albedo * (0.18 + max(dot(N, L), 0.0) * 1.05) + pow(max(dot(N, H), 0.0), 25.0) * 0.05);
+        }
       }
       col = (acc * fog * 1.25 + litTerm) * uBoost * uTint;
     #else
@@ -338,12 +365,13 @@ const RELIEF = {
   paper: 0.0122, paper2: 0.0122, corr: 0.0612, boards: 0.0367, parquet: 0.0184, planks: 0.0428, oceil: 0.0367, rust: 0.0306, iron: 0.0245,
   carpet: 0.0122, carpet2: 0.0122, rug: 0.0122,
 };
-export function echoMaterial({ kind = 'surface', tint = 0xffffff, boost = 1, pat = 0, map = 'metal', scale = 0.5, bump = 1, wet = 0, map2 = null, scale2 = 0.5, split = 1.4, grime = 0 } = {}) {
+export function echoMaterial({ kind = 'surface', tint = 0xffffff, boost = 1, pat = 0, map = 'metal', scale = 0.5, bump = 1, wet = 0, map2 = null, scale2 = 0.5, split = 1.4, grime = 0, human = false } = {}) {
   const surface = kind === 'surface';
   const relief = surface && pat !== 1 && pat !== 3 && pat !== 8 ? RELIEF[map] ?? 0 : 0;
   const m = new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
+    vertexColors: human,
     defines: surface ? { SURFACE: 1 } : {},
     uniforms: {
       uTime: shared.uTime,
@@ -356,6 +384,7 @@ export function echoMaterial({ kind = 'surface', tint = 0xffffff, boost = 1, pat
       uBoost: { value: boost },
       uPat: { value: pat },
       uLit: { value: 0 },
+      uHuman: { value: human ? 1 : 0 },
       uLocal: { value: 0 },
       uTex: { value: surface ? tex(map, true) : null },
       uNrm: { value: surface ? tex(map, false) : null },
@@ -372,6 +401,8 @@ export function echoMaterial({ kind = 'surface', tint = 0xffffff, boost = 1, pat
       uPom: { value: relief * pomScale },
     },
     side: surface ? THREE.DoubleSide : THREE.FrontSide,
+    // Sounds reveal textured surfaces, without the polygon-edge overlay.
+    visible: kind !== 'line',
   });
   if (surface) {
     m.polygonOffset = true;
@@ -397,8 +428,7 @@ export function echoMaterial({ kind = 'surface', tint = 0xffffff, boost = 1, pat
   return m;
 }
 
-// Vertices of the edge lines as fine points: they flash where the wave front
-// is and go out as the surface fills in.
+// Legacy edge-vertex overlay, disabled below alongside the polygon outlines.
 export function echoPoints(geo, { tint = 0xffffff, boost = 1, size = 2.2 } = {}) {
   const m = new THREE.ShaderMaterial({
     uniforms: { uTime: shared.uTime, uP: shared.uP, uQ: shared.uQ, uC: shared.uC, uN: shared.uN, uListen: shared.uListen, uTint: { value: new THREE.Color(tint) }, uBoost: { value: boost }, uSize: { value: size } },
@@ -427,11 +457,10 @@ export function echoPoints(geo, { tint = 0xffffff, boost = 1, size = 2.2 } = {})
           if (age < 0.0) continue;
           float d = distance(w.xyz, P.xyz);
           if (d > Q.x) continue;
-          float fr = (d - age * Q.y) / 0.35;
-          float ts = age - d / Q.y;
-          float f = 1.0 - d / Q.x;
+          float f = 1.0 - smoothstep(0.0, Q.x, d);
           vec3 c = mix(vec3(dot(uC[i], vec3(0.3, 0.5, 0.2))), uC[i], 0.5);
-          acc += c * (exp(-fr * fr) + (ts > 0.0 ? exp(-ts * 7.0) * 0.7 : 0.0)) * f * Q.z;
+          float fadeAge = max(0.0, age - ${REVEAL_RISE}) * 7.0;
+          acc += c * smoothstep(0.0, ${REVEAL_RISE}, age) * exp(-fadeAge * fadeAge) * 0.7 * f * Q.z;
         }
         vec4 mv = viewMatrix * w;
         vCol = acc * exp(-length(mv.xyz) * 0.07);
@@ -452,6 +481,8 @@ export function echoPoints(geo, { tint = 0xffffff, boost = 1, size = 2.2 } = {})
     blending: THREE.AdditiveBlending,
   });
   const pts = new THREE.Points(geo, m);
+  // These points mark edge vertices and belong to the same disabled overlay.
+  pts.visible = false;
   pts.frustumCulled = false;
   return pts;
 }
@@ -522,8 +553,15 @@ class EchoSystem {
       if (q.z <= 0) continue;
       const age = this.time - p.w;
       const d = Math.hypot(pos.x - p.x, pos.y - p.y, pos.z - p.z);
-      if (d > q.x || age * q.y < d) continue;
-      const v = Math.exp(-(age - d / q.y) * q.w) * (1 - d / q.x) * q.z;
+      if (d > q.x || age < 0) continue;
+      const onset = THREE.MathUtils.smoothstep(age, 0, REVEAL_RISE);
+      const fadeAge = Math.max(0, age - REVEAL_RISE) * q.w;
+      const trail = Math.exp(-fadeAge * fadeAge);
+      const falloff = 1 - THREE.MathUtils.smoothstep(d, 0, q.x);
+      const frontOffset = (d - age * q.y) / 1.0;
+      const front = Math.exp(-frontOffset * frontOffset);
+      const frontFade = THREE.MathUtils.smoothstep(age, 0, 0.12) * (1 - THREE.MathUtils.smoothstep(age * q.y / q.x, 0.6, 1));
+      const v = (onset * trail * 0.6 + front * frontFade * FRONT_STRENGTH) * falloff * q.z;
       if (v > best) best = v;
     }
     return best;
@@ -535,7 +573,7 @@ export function setListen(k) {
   shared.uListen.value = k;
 }
 
-// Dust motes hanging in the air around the listener, lit only by passing waves.
+// Dust motes share the surfaces' soft sound-driven illumination.
 export function createDust(count = 2200) {
   const pos = new Float32Array(count * 3);
   const seed = new Float32Array(count);
@@ -572,10 +610,9 @@ export function createDust(count = 2200) {
           if (age < 0.0) continue;
           float d = distance(p, P.xyz);
           if (d > Q.x) continue;
-          float fr = (d - age * Q.y) / 0.5;
-          float ts = age - d / Q.y;
-          float f = 1.0 - d / Q.x;
-          acc += uC[i] * (exp(-fr * fr) * 1.2 + (ts > 0.0 ? exp(-ts * Q.w * 1.5) * 0.35 : 0.0)) * f * Q.z;
+          float f = 1.0 - smoothstep(0.0, Q.x, d);
+          float fadeAge = max(0.0, age - ${REVEAL_RISE}) * Q.w;
+          acc += uC[i] * smoothstep(0.0, ${REVEAL_RISE}, age) * exp(-fadeAge * fadeAge) * 0.35 * f * Q.z;
         }
         vCol = acc * (0.08 + seed * 0.16);
         vec4 mv = viewMatrix * vec4(p, 1.0);

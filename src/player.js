@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { FLOOR } from './level.js';
 import { COLORS } from './echo.js';
+import { findTripObstacle } from './trip-obstacle.js';
 
 const SURF_MUL = { [FLOOR.TILE]: 1, [FLOOR.WATER]: 1.6, [FLOOR.GLASS]: 1.7, [FLOOR.METAL]: 1.3, [FLOOR.CARPET]: 0.65 };
+const FALL_DURATION = 2.1;
 
 export class Player {
   constructor(camera, level, audio, game) {
@@ -26,15 +28,59 @@ export class Player {
     this.eye = 1.65;
     this.vel = new THREE.Vector3();
     this.clickCd = 0;
+    this.clickStreak = 0;
+    this.clickQuietT = 0;
     this.stones = 0;
     this.projectiles = [];
     this.frozen = false;
     this.moving = false;
     this.running = false;
     this.lookTarget = null;
+    this.clearFall();
+    this.falls = 0;
+  }
+
+  clearFall() {
+    this.fallT = this.fallK = this.tripCooldown = this.runDistance = 0;
+    this.fallImpact = false;
+    this.fallSide = 1;
+  }
+
+  trip(hit) {
+    this.fallT = FALL_DURATION;
+    this.tripCooldown = 6;
+    this.runDistance = this.stepAcc = 0;
+    this.fallImpact = false;
+    const side = (hit.point.x - this.pos.x) * Math.cos(this.yaw) - (hit.point.z - this.pos.z) * Math.sin(this.yaw);
+    this.fallSide = Math.sign(side) || ((this.steps || 0) % 2 ? -1 : 1);
+    this.holding = this.running = this.listening = this.moving = false;
+    this.stamina = Math.max(0, this.stamina - 0.16);
+    this.falls++;
+    if (!this.tripHinted) {
+      this.tripHinted = true;
+      this.game.hint('Споткнулся. Сбавь шаг у низких препятствий.', 4, true);
+    }
+  }
+
+  updateFall(dt) {
+    this.tripCooldown = Math.max(0, this.tripCooldown - dt);
+    if (this.fallT <= 0) { this.fallK = 0; return; }
+    this.fallT = Math.max(0, this.fallT - dt);
+    const age = FALL_DURATION - this.fallT;
+    this.fallK = THREE.MathUtils.smoothstep(age, 0, 0.3) * (1 - THREE.MathUtils.smoothstep(age, 0.85, FALL_DURATION));
+    if (!this.fallImpact && age >= 0.32) {
+      this.fallImpact = true;
+      const surface = this.level.floorAt(this.pos.x, this.pos.z);
+      const position = this.pos.clone().setY(0.15);
+      this.audio.bodyFall(position, surface);
+      this.game.noise(position, { radius: 12 * (SURF_MUL[surface] || 1), visual: 8, source: 'player', kind: 'fall', color: COLORS.player, strength: 1.1, speed: 11 });
+      this.shake = Math.max(this.shake || 0, 0.65);
+      this.breathT = 1;
+    }
   }
 
   reset(pos, yaw) {
+    this.braceContact = null;
     this.pos.set(pos.x, 0, pos.z);
     this.yaw = yaw;
     this.pitch = 0;
@@ -46,6 +92,11 @@ export class Player {
     this.frozen = false;
     this.lookTarget = null;
     this.hidden = null;
+    this.clickCd = 0;
+    this.clickStreak = 0;
+    this.clickQuietT = 0;
+    this.clearFall();
+    this.eye = 1.65;
     this.camera.position.set(this.pos.x, this.eye, this.pos.z);
     this.camera.rotation.set(0, yaw, 0, 'YXZ');
     for (const p of this.projectiles) p.mesh.removeFromParent();
@@ -85,8 +136,13 @@ export class Player {
   }
 
   click() {
-    if (this.clickCd > 0 || this.frozen) return;
+    if (this.clickCd > 0 || this.frozen || this.fallT > 0) return;
     this.clickCd = 0.55;
+    // Repeated taps carry a recognisable rhythm farther than a single knock.
+    // Only actual taps count; three seconds of silence break the pattern.
+    this.clickStreak = Math.min(5, this.clickStreak + 1);
+    this.clickQuietT = 3;
+    const radius = 5 + (this.clickStreak - 1) * 6;
     this.audio.click();
     // the cane taps the floor ahead: the echo starts at its tip
     let p = this.camera.position.clone();
@@ -95,11 +151,11 @@ export class Player {
       p = this.vm.tipWorld();
       p.y = Math.max(0.05, p.y);
     }
-    this.game.noise(p, { radius: 5, visual: 10, source: 'player', kind: 'click', color: COLORS.click, speed: 13, strength: 0.68, decay: 2.1 });
+    this.game.noise(p, { radius, visual: 10, source: 'player', kind: 'click', color: COLORS.click, speed: 13, strength: 0.68, decay: 2.1 });
   }
 
   throwStone(scene) {
-    if (this.stones <= 0 || this.frozen) return;
+    if (this.stones <= 0 || this.frozen || this.fallT > 0) return;
     this.stones--;
     const dir = new THREE.Vector3();
     this.camera.getWorldDirection(dir);
@@ -111,16 +167,19 @@ export class Player {
   }
 
   update(dt, scene) {
+    this.updateFall(dt);
     this.clickCd -= dt;
+    this.clickQuietT = Math.max(0, this.clickQuietT - dt);
+    if (this.clickQuietT === 0) this.clickStreak = 0;
     const k = this.keys;
     let mx = 0, mz = 0;
-    if (!this.frozen) {
+    if (!this.frozen && this.fallT <= 0) {
       if (k.has('KeyW') || k.has('ArrowUp')) mz -= 1;
       if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
       if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
       if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
     }
-    this.listening = !this.frozen && !this.hidden && k.has('KeyV');
+    this.listening = !this.frozen && this.fallT <= 0 && !this.hidden && k.has('KeyV');
     if (this.hidden || this.listening) mx = mz = 0;
     const want = new THREE.Vector3(mx, 0, mz);
     this.moving = want.lengthSq() > 0;
@@ -131,8 +190,13 @@ export class Player {
 
     const before = this.pos.clone();
     this.pos.addScaledVector(this.vel, dt);
+    if (this.running && !this.hidden && this.fallT <= 0 && this.tripCooldown <= 0 && (this.game.psychosis || 0) >= 0.55 && this.runDistance > 0.65 && this.vel.length() > 3) {
+      const hit = findTripObstacle(this.level, before, this.pos);
+      if (hit) this.trip(hit);
+    }
     if (!this.hidden) this.level.collide(this.pos, 0.3);
     const moved = Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
+    this.runDistance = this.running && this.fallT <= 0 ? this.runDistance + moved : 0;
 
     // stamina
     if (this.running) this.stamina = Math.max(0, this.stamina - dt * 0.12);
@@ -141,14 +205,14 @@ export class Player {
     // footsteps
     this.stepAcc += moved;
     const stride = (this.stride = this.crouch ? 0.55 : this.running ? 1.1 : 0.78);
-    if (this.stepAcc > stride) {
+    if (this.fallT <= 0 && this.stepAcc > stride) {
       this.steps = (this.steps || 0) + 1;
       this.stepAcc = 0;
       this.footstep();
     }
 
     // breath hold
-    const wantHold = !this.frozen && (k.has('KeyQ') || k.has('Mouse2'));
+    const wantHold = !this.frozen && this.fallT <= 0 && (k.has('KeyQ') || k.has('Mouse2'));
     if (wantHold && this.breathCap > 0.02 && !this.holding) {
       this.holding = true;
       this.holdT = 0;
@@ -195,8 +259,9 @@ export class Player {
     // every footfall, sways with breathing, and shakes when something heavy walks near.
     const lowCeil = this.level.ceilAt(Math.floor(this.pos.x), Math.floor(this.pos.z)) < 1.7;
     if (lowCeil) this.crouch = true;
-    const targetEye = this.hidden && this.hidden.low ? 0.27 : this.crouch ? 1.0 : 1.65;
-    this.eye += (targetEye - this.eye) * Math.min(1, dt * 7);
+    const standingEye = this.hidden && this.hidden.low ? 0.27 : this.crouch ? 1.0 : 1.65;
+    const targetEye = Math.max(0.25, standingEye - this.fallK * 1.36);
+    this.eye += (targetEye - this.eye) * Math.min(1, dt * (this.fallT > 0 ? 12 : 7));
     const sp = Math.hypot(this.vel.x, this.vel.z);
     const walk = Math.min(1, sp / 2.3);
     this.bob += dt * sp * 3.4;
@@ -250,6 +315,8 @@ export class Player {
     const trX = sn(T * 13, 7) * trem, trY = sn(T * 15, 9) * trem;
     const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
     this.camera.position.set(this.pos.x + fx * breathZ, this.eye + this.headY + breathY + gaitY + shY + trY, this.pos.z + fz * breathZ);
+    this.camera.position.x += fx * this.fallK * 0.12;
+    this.camera.position.z += fz * this.fallK * 0.12;
     const side = gaitX + shX + trX;
     this.camera.position.x += Math.cos(this.yaw) * side;
     this.camera.position.z -= Math.sin(this.yaw) * side;
@@ -300,7 +367,8 @@ export class Player {
       const q = new THREE.Quaternion().setFromRotationMatrix(m);
       this.camera.quaternion.slerp(q, Math.min(1, dt * 10));
     } else {
-      this.camera.rotation.set(this.pitch + swayP + this.runPitch, this.yaw + swayY, this.roll, 'YXZ');
+      const viewPitch = MU.lerp(this.pitch + swayP + this.runPitch, -1.25, this.fallK);
+      this.camera.rotation.set(this.fallT > 0 ? MU.clamp(viewPitch, -1.48, 1.45) : viewPitch, this.yaw + swayY, this.roll + this.fallSide * this.fallK * 0.12, 'YXZ');
     }
 
     this.updateProjectiles(dt);

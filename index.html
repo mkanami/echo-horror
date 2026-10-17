@@ -10,7 +10,7 @@
     <div id="app"></div>
 
     <div id="hud" class="hidden">
-      <div id="objective"></div>
+      <div id="objective" role="status" aria-live="polite" aria-hidden="true"><div id="objective-caption"></div><p id="objective-text"></p><small>Удерживай TAB — вспомнить цель</small></div>
       <div id="location"></div>
       <div id="crosshair"></div>
       <div id="listen" class="hidden"><div id="listen-mark"></div></div>
@@ -19,15 +19,16 @@
       <div id="siege" class="hidden">
         <div class="row"><span>ЛИФТ</span><div class="bar"><i id="sg-lift"></i></div><b id="sg-floor"></b></div>
         <div class="row"><span>ЗАСЛОНКА</span><div class="bar"><i id="sg-power"></i></div><b id="sg-pw"></b></div>
-        <div class="row small"><span id="sg-A"></span><span id="sg-B"></span></div>
+        <div class="row"><span>ПРИВОД</span><div class="bar"><i id="sg-charge"></i></div><b id="sg-charge-value"></b></div>
+        <div class="row small"><span id="sg-A"></span><span id="sg-B"></span><span id="sg-C"></span></div>
         <div id="sg-warn"></div>
       </div>
       <div id="brief" class="hidden">
-        <h4>ЛИФТ ИДЁТ МИНУТУ С ЧЕТВЕРТЬЮ</h4>
-        <p>Оно придёт за тобой: по переходу к <b>двери</b> или ползком по шахте к <b>люку</b>.</p>
-        <p><b>[1]</b> — заслонка двери, <b>[2]</b> — заслонка люка. Опущена может быть только одна: мотор общий.</p>
-        <p>Закрытую заслонку оно бьёт и может вырвать. Держи <b>[R]</b> рядом — подпираешь её.</p>
-        <p>Не пробив, оно уходит к другому входу. Слушай, куда. <b>[V]</b> — вслушаться, <b>[3]</b> — сейсмодатчик.</p>
+        <h4>ДОЖДИСЬ ЛИФТА</h4>
+        <p>Три входа: <b>[1]</b> — дверь из перехода, <b>[2]</b> — люк, <b>[3]</b> — служебная дверь слева. Опущена может быть только одна заслонка.</p>
+        <p>Подойди вплотную лицом к закрытой заслонке: рука упрётся в неё, и ты начнёшь подпирать. У низкого люка присядь <b>[C]</b>. Под ударами расходуются силы.</p>
+        <p>Закрытые заслонки и переключения расходуют питание. Открой все в передышке — привод восстановится. <b>[4]</b> — сейсмодатчик, тоже расходует питание.</p>
+        <p>Шаги — переход, скрежет — шахта, скрип — обход слева. Оно может передумать. <b>[V]</b> — вслушаться.</p>
       </div>
       <div id="radar" class="hidden"><canvas id="radar-c" width="240" height="240"></canvas><div>СЕЙСМОДАТЧИК</div></div>
       <div id="meters">
@@ -38,49 +39,86 @@
       </div>
     </div>
 
-    <div id="start" class="screen">
-      <div class="inner">
-        <h1>ЭХО</h1>
-        <div class="sub">объект «Камертон» · 1987</div>
-        <div id="intro"></div>
-        <div class="phones">🎧 В наушниках. Здесь всё решает слух.</div>
-        <button id="continue" class="hidden">ПРОДОЛЖИТЬ</button>
-        <button id="play" disabled>ЗАГРУЗКА…</button>
-        <label class="sens">Графика <select class="quality"><option value="high">Высокая</option><option value="mid">Средняя</option><option value="low">Низкая</option></select></label>
-        <div class="controls">
-          <div><b>WASD</b> идти</div>
-          <div><b>Shift</b> бежать (громко)</div>
-          <div><b>C</b> красться (тихо)</div>
-          <div><b>F</b> стук тростью — осмотреться</div>
-          <div><b>Q / ПКМ</b> задержать дыхание</div>
-          <div><b>ЛКМ</b> бросить камень</div>
-          <div><b>G</b> бросить будильник</div>
-          <div><b>E</b> взаимодействие</div>
-          <div><b>V</b> вслушаться</div>
-          <div><b>Esc</b> пауза</div>
+    <main id="start" class="frontend" aria-label="Главное меню">
+      <div class="menu-scene" aria-hidden="true"></div>
+      <div class="film-grain" aria-hidden="true"></div>
+
+      <section class="front-view loading-view" data-view="loading" aria-labelledby="loading-heading">
+
+        <h2 id="loading-heading">Загрузка</h2>
+
+        <div class="load-area" role="status" aria-live="polite">
+          <div class="load-caption"><span id="load-label">Подготовка объекта</span><span id="load-value">0%</span></div>
+          <div id="load-progress" class="load-track" role="progressbar" aria-label="Загрузка игры" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+          <p id="load-detail">Первый запуск может занять немного времени.</p>
         </div>
-      </div>
-    </div>
+
+      </section>
+
+      <section class="front-view advisory-view hidden" data-view="headphones" aria-labelledby="phones-heading">
+        <svg class="headphones-icon" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M19 57V45a31 31 0 0 1 62 0v12M25 49V44a25 25 0 0 1 50 0v5"/><rect x="13" y="50" width="15" height="28" rx="5"/><rect x="72" y="50" width="15" height="28" rx="5"/><path d="M39 54v16m11-23v30m11-23v16"/></svg>
+
+        <h2 id="phones-heading">Наденьте наушники.</h2>
+        <p class="english-caption" lang="en">Best experienced with headphones</p>
+        <p class="advisory-copy">Пространственный звук помогает<br>определить, откуда приближается опасность.</p>
+        <p class="content-warning">Игра содержит резкие звуки, вспышки света<br>и сцены психологического ужаса.</p>
+        <button id="enter-menu" class="line-button">Я ГОТОВ <span aria-hidden="true">→</span></button>
+        <span class="device-note">КЛАВИАТУРА + МЫШЬ · РЕКОМЕНДУЕТСЯ ПК</span>
+      </section>
+
+      <section class="front-view main-view hidden" data-view="menu" aria-labelledby="game-title">
+
+        <h1 id="game-title">ЭХО</h1>
+
+        <nav class="menu-nav" aria-label="Главное меню">
+          <button id="continue" class="menu-item hidden">Продолжить <span class="nav-note">С КОНТРОЛЬНОЙ ТОЧКИ</span></button>
+          <button id="play" class="menu-item primary">Новая игра <span aria-hidden="true">↗</span></button>
+          <button class="menu-item" data-open="settings">Настройки</button>
+          <button class="menu-item" data-open="controls">Как играть</button>
+          <button class="menu-item" data-open="credits">Авторы</button>
+        </nav>
+        <div class="menu-headphones"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M4 14v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="12" width="4" height="8" rx="1"/><rect x="17" y="12" width="4" height="8" rx="1"/></svg><span>Рекомендуются наушники</span></div>
+      </section>
+
+      <section class="front-view detail-view hidden" data-view="settings" aria-labelledby="settings-heading">
+        <button class="back-button" data-back>← НАЗАД</button>
+        <h2 id="settings-heading">Настройки</h2>
+        <div class="setting-row"><label for="vol">Громкость<small>Начните с комфортного уровня.</small></label><div class="slider-control"><output id="vol-value" for="vol">60%</output><input id="vol" type="range" min="0" max="1.5" step="0.05" value="0.9" /></div></div>
+        <div class="setting-row"><label for="sens">Чувствительность мыши</label><div class="slider-control"><output id="sens-value" for="sens">1.4</output><input id="sens" type="range" min="0.5" max="3" step="0.1" value="1.4" /></div></div>
+        <div class="setting-row"><label for="menu-quality">Качество графики<small>Уменьшите, если игра работает медленно.</small></label><select id="menu-quality" class="quality"><option value="high">Высокое</option><option value="mid">Среднее</option><option value="low">Низкое</option></select></div>
+        <div class="setting-row"><label for="player-meters">Показатели персонажа<small>Камни, дыхание и силы.</small></label><select id="player-meters"><option value="hidden">Скрыты</option><option value="visible">Показывать</option></select></div>
+        <div class="setting-row"><span>Экран</span><button id="fullscreen" class="small-button">На весь экран ↗</button></div>
+        <p id="settings-message" class="quiet" role="status"></p>
+        <p class="panel-footnote">Настройки сохраняются автоматически.</p>
+      </section>
+
+      <section class="front-view detail-view hidden" data-view="controls" aria-labelledby="controls-heading">
+        <button class="back-button" data-back>← НАЗАД</button><h2 id="controls-heading">Управление</h2>
+        <p class="panel-intro">Стук тростью проявляет окружение. Громкие звуки привлекают существо.</p>
+        <div class="controls control-list">
+          <div><b>W A S D</b><span>Идти</span></div><div><b>SHIFT</b><span>Бежать · громко</span></div>
+          <div><b>C</b><span>Красться · тихо</span></div><div><b>F</b><span>Стук тростью · частые стуки привлекают существо</span></div>
+          <div><b>Q / ПКМ</b><span>Задержать дыхание</span></div><div><b>ЛКМ</b><span>Бросить камень</span></div>
+          <div><b>G</b><span>Бросить будильник</span></div><div><b>E</b><span>Взаимодействовать / удерживать</span></div>
+          <div><b>V</b><span>Вслушаться</span></div><div><b>ESC</b><span>Пауза</span></div>
+          <div><b>TAB</b><span>Удерживать — вспомнить цель</span></div>
+          <div><b>1 / 2 / 3</b><span>Три заслонки · 4 — датчик</span></div><div><b>Вплотную</b><span>Подпирать заслонку рукой</span></div>
+        </div><p class="panel-footnote">Прогресс сохраняется в контрольных точках автоматически.</p>
+      </section>
+
+      <section class="front-view detail-view hidden" data-view="credits" aria-labelledby="credits-heading">
+        <button class="back-button" data-back>← НАЗАД</button><h2 id="credits-heading">Авторы</h2>
+        <div class="credits-scroll"><p class="credit-label">ИГРА</p><p class="credit-name">tg-prplx</p><p class="credit-label">ЗВУКИ</p><p>Little Robot Sound Factory · congusbongus · EminYILDIRIM · swuing · Eelke · Kenney · rubberduck · Ogrebane · psychhead_ · Independent.nu</p><p class="credit-label">МАТЕРИАЛЫ</p><p>ambientCG</p><p class="credit-label">ТЕХНОЛОГИИ</p><p>three.js · Web Audio API · Vite</p><p class="credit-label">ЛИЦЕНЗИИ</p><p>Код — MIT. Ассеты — CC0 / CC BY 3.0.</p><a href="https://github.com/tg-prplx/echo-horror/blob/main/CREDITS.md" target="_blank" rel="noopener noreferrer">Все источники и лицензии ↗</a></div>
+      </section>
+
+      <section class="front-view briefing-view hidden" data-view="briefing" aria-labelledby="briefing-heading"><h2 id="briefing-heading">Ночью станция<br>замолчала.</h2><div id="intro"></div><button id="begin-session" class="line-button">ОТКРЫТЬ ГЛАЗА <span aria-hidden="true">→</span></button></section>
+      <section class="front-view hidden" data-view="confirm" aria-labelledby="confirm-heading"><h2 id="confirm-heading">Начать сначала?</h2><p class="panel-intro">Сохранённая контрольная точка будет заменена.</p><button id="confirm-new" class="line-button">НАЧАТЬ ЗАНОВО <span aria-hidden="true">→</span></button><button class="back-button cancel-button" data-back>ОТМЕНА</button></section>
+      <section class="front-view hidden" data-view="error" aria-labelledby="error-heading"><h2 id="error-heading">Ошибка загрузки</h2><p id="load-error" role="alert" class="panel-intro"></p><button id="load-retry" class="line-button">ПОВТОРИТЬ <span aria-hidden="true">→</span></button></section>
+      <footer class="archive-footer"><span>0.1.0 · tg-prplx</span></footer>
+    </main>
 
     <div id="pause" class="screen hidden">
-      <div class="inner">
-        <h2>ПАУЗА</h2>
-        <button id="resume">ПРОДОЛЖИТЬ</button>
-        <button id="restart" class="ghost">НАЧАТЬ ЗАНОВО</button>
-        <label class="sens">Чувствительность мыши <input id="sens" type="range" min="0.5" max="3" step="0.1" value="1.4" /></label>
-        <label class="sens">Громкость <input id="vol" type="range" min="0" max="1.5" step="0.05" value="0.9" /></label>
-        <label class="sens">Графика <select class="quality"><option value="high">Высокая</option><option value="mid">Средняя</option><option value="low">Низкая</option></select></label>
-        <div class="controls">
-          <div><b>WASD</b> идти</div>
-          <div><b>Shift</b> бежать</div>
-          <div><b>C</b> красться</div>
-          <div><b>F</b> щелчок</div>
-          <div><b>Q / ПКМ</b> не дышать</div>
-          <div><b>ЛКМ</b> камень</div>
-          <div><b>G</b> будильник</div>
-          <div><b>E</b> действие</div>
-        </div>
-      </div>
+      <div class="pause-inner"><h2>Пауза</h2><nav class="menu-nav" aria-label="Меню паузы"><button id="resume" class="menu-item primary">Продолжить <span aria-hidden="true">↗</span></button><button class="menu-item" data-open="settings" data-context="pause">Настройки</button><button class="menu-item" data-open="controls" data-context="pause">Как играть</button><button id="return-menu" class="menu-item">В главное меню</button><button id="restart" class="menu-item muted-item">Начать заново</button></nav><p class="panel-footnote">Прогресс сохранён в последней контрольной точке.</p></div>
     </div>
 
     <div id="note" class="hidden">
@@ -109,6 +147,6 @@
 
     <div id="slits" class="hidden"></div>
     <div id="fade"></div>
-    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/src/entry.js"></script>
   </body>
 </html>

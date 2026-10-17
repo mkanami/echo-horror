@@ -51,7 +51,7 @@ export class Builder {
       g.computeBoundingBox();
       _box.copy(g.boundingBox);
       if (_box.min.y < 1.5 && _box.max.y > 0.15) {
-        this.colliders.push({ minX: _box.min.x, maxX: _box.max.x, minZ: _box.min.z, maxZ: _box.max.z });
+        this.colliders.push({ minX: _box.min.x, maxX: _box.max.x, minY: _box.min.y, maxY: _box.max.y, minZ: _box.min.z, maxZ: _box.max.z });
       }
     }
     return g;
