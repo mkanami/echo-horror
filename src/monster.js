@@ -273,6 +273,8 @@ export class Monster {
     this.suspicion = 0;
     this.stateT = 0;
     this.lunge = null;
+    this.afterSniff = null;
+    this.checkList = null;
     this.sniffCd = 0;
     this.curSpeed = 0;
     this.scare = null;
@@ -331,6 +333,28 @@ export class Monster {
       return true;
     }
     if (this.state === 'chase') return true;
+    // going round the hiding places it keeps to its round: small sounds only make
+    // it surer (the sniff at the right door will find you)
+    if ((this.state === 'check' || (this.state === 'sniff' && this.afterSniff === 'check')) && source === 'player' && ['breath', 'crouch', 'item', 'step'].includes(kind)) return true;
+    // lying in wait it doesn't move for small sounds — it only turns its head
+    if (this.state === 'ambush' && radius < 9 && pd > 3.4) {
+      this.turnTowards(pos, 0.6);
+      return true;
+    }
+    // it learns: stones thrown again and again stop fooling it, and it goes
+    // looking for whoever is throwing them
+    if (source === 'stone' && playerPos) {
+      const now = performance.now() / 1000;
+      this.lures = (this.lures || []).filter((t) => now - t < 70);
+      this.lures.push(now);
+      if (this.lures.length >= 3) {
+        const guess = playerPos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 3, 0, (Math.random() - 0.5) * 3));
+        this.goTo(guess, 'investigate');
+        this.suspicion = Math.max(this.suspicion, 0.45);
+        if (this.onWise) this.onWise();
+        return true;
+      }
+    }
     // inexact localisation for far sounds
     const err = (1 - prox) * Math.min(3, d * 0.15);
     const t = pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * err, 0, (Math.random() - 0.5) * err));
@@ -354,6 +378,43 @@ export class Monster {
     this.doSniff();
   }
 
+  // shadow the player from just out of sight: move, stop, listen, move closer
+  stalk(duration = 40) {
+    if (!this.active || this.state === 'chase' || this.state === 'kill') return;
+    this.setState('stalk');
+    this.stalkT = duration;
+    this.stalkWait = 0;
+    this.path = null;
+  }
+
+  // walk to a spot on the player's way and wait there without a sound
+  ambush(point) {
+    if (!this.active || this.state === 'chase' || this.state === 'kill') return;
+    this.ambushAt = point.clone();
+    this.ambushT = 32;
+    this.goTo(point, 'ambushGo');
+  }
+
+  // after losing the player: listen at each nearby hiding place in turn
+  checkSpots(spots) {
+    this.checkList = spots.slice();
+    this.nextCheck();
+  }
+  nextCheck() {
+    const s = this.checkList && this.checkList.shift();
+    if (!s) {
+      // nothing: it gives up and leaves, so a held breath is enough
+      this.afterSniff = null;
+      const away = this.level.randomWalkable(this.pos, 16, 9);
+      if (away) this.goTo(away, 'investigate');
+      else this.setState('search');
+      this.idleT = 0;
+      return;
+    }
+    const out = new THREE.Vector3(s.front.x - s.inside.x, 0, s.front.z - s.inside.z).normalize();
+    this.goTo(s.front.clone().addScaledVector(out, 0.35), 'check');
+  }
+
   startChase() {
     if (this.state === 'chase' || this.state === 'kill') return;
     this.setState('chase');
@@ -371,6 +432,13 @@ export class Monster {
     this.path = this.level.findPath(this.pos, this.target);
     if (this.path) this.path.shift();
     this.setState('search');
+    // it knows you went to ground somewhere close: it checks the hiding places
+    const t = this.target;
+    const spots = this.level.items
+      .filter((it) => it.type === 'locker' && Math.hypot(it.front.x - t.x, it.front.z - t.z) < 7)
+      .sort((a, b) => Math.hypot(a.front.x - t.x, a.front.z - t.z) - Math.hypot(b.front.x - t.x, b.front.z - t.z))
+      .slice(0, 2);
+    if (spots.length) this.checkSpots(spots);
     this.audio.play('m_growl', this.headWorld, { gain: 0.9, rate: 0.7, wet: 0.8 });
     if (this.onChase) this.onChase(false);
   }
@@ -421,7 +489,10 @@ export class Monster {
         break;
       case 'hunt':
         this.speed = 3.1 * this.assist.speed;
-        if (!this.path || !this.path.length) this.setState('search');
+        if (!this.path || !this.path.length) {
+          if (player.hidden && pd < 3) this.startSniff(true);
+          else this.setState('search');
+        }
         if (pd < 1.6) {
           if (this.suspicion > 0.9) this.startWindup(player.pos);
           else this.startSniff(true);
@@ -429,6 +500,71 @@ export class Monster {
         break;
       case 'scripted':
         this.speed = this.ramming ? 0 : this.scriptSpeed || 0;
+        break;
+      case 'stalk': {
+        this.speed = 1.25 * this.assist.speed;
+        this.stalkT -= dt;
+        if (this.stalkT <= 0) {
+          // it has had its look: it drifts off (and the tension can breathe)
+          const far = this.level.randomWalkable(this.pos, 24, 14);
+          if (far) this.goTo(far, 'wander');
+          else this.setState('wander');
+          break;
+        }
+        if (!this.path || !this.path.length) {
+          this.speed = 0;
+          this.turnTowards(pp, dt * 0.8); // listening toward you
+          this.stalkWait -= dt;
+          if (this.stalkWait <= 0) {
+            // a new spot: near you, but with a wall between
+            let pick = null;
+            for (let k = 0; k < 24 && !pick; k++) {
+              const c = this.level.randomWalkable(pp, 10.5, 5.5);
+              if (!c) continue;
+              const hidden = this.level.occlusion(pp, c) > 0.35 || player.hidden;
+              if (hidden || k > 18) pick = c;
+            }
+            if (pick) {
+              this.path = this.level.findPath(this.pos, pick);
+              if (this.path) this.path.shift();
+            }
+            this.stalkWait = 2.5 + Math.random() * 3.5;
+          }
+          // now and then a breath close by, so you know it's there
+          this.cueT = (this.cueT ?? 4) - dt;
+          if (this.cueT <= 0) {
+            this.cueT = 6 + Math.random() * 5;
+            this.audio.play('m_breath', this.headWorld, { gain: 0.55, rate: 0.8 + Math.random() * 0.15, wet: 0.6 });
+          }
+        }
+        this.proximitySniff(pd, player);
+        break;
+      }
+      case 'ambushGo':
+        this.speed = 2.0 * this.assist.speed;
+        if (!this.path || !this.path.length) {
+          this.setState('ambush');
+          this.turnTowards(pp, PI);
+        }
+        break;
+      case 'ambush':
+        // dead still, silent, waiting for you to walk into it
+        this.speed = 0;
+        this.ambushT -= dt;
+        this.turnTowards(pp, dt * 0.4);
+        if (pd < 3.3 && !player.hidden) {
+          this.audio.stinger('high', 1.0);
+          this.startChase();
+          break;
+        }
+        if (this.ambushT <= 0) this.setState('wander');
+        break;
+      case 'check':
+        this.speed = 2.4 * this.assist.speed;
+        if (!this.path || !this.path.length) {
+          this.afterSniff = 'check';
+          this.startSniff(true);
+        }
         break;
       case 'chase': {
         this.speed = 3.4 * this.assist.speed;
@@ -487,11 +623,15 @@ export class Monster {
         }
         // right up against your hiding place: it hears you breathe unless you don't
         if (player.hidden && pd < 2.2 && this.stateT > 1.4 && !player.holding) {
-          this.suspicion += dt * 0.55;
+          this.suspicion += dt * 1.0;
           if (this.suspicion > 0.95) {
             this.startWindup(pp);
             break;
           }
+        }
+        if (this.stateT > 2.3 && this.afterSniff === 'check') {
+          this.nextCheck();
+          break;
         }
         if (this.stateT > 3.6) {
           // it moves on, away from the player
@@ -634,14 +774,15 @@ export class Monster {
       const stride = this.state === 'hunt' || this.state === 'chase' ? 1.25 : 0.95;
       if (this.stepAcc > stride) {
         this.stepAcc = 0;
-        const heavy = this.state === 'hunt' || this.state === 'chase' ? 1.6 : 0.8;
+        const sneaking = this.state === 'stalk' || this.state === 'ambushGo' || this.state === 'check';
+        const heavy = this.state === 'hunt' || this.state === 'chase' ? 1.6 : sneaking ? 0.4 : 0.8;
         this.audio.monsterStep(this.pos, heavy);
         if (player) {
           const d = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
           player.shake = Math.max(player.shake || 0, Math.max(0, 1 - d / 8) * (this.state === 'hunt' || this.state === 'chase' ? 1 : 0.6));
         }
         echo.emit(new THREE.Vector3(this.pos.x, 0.1, this.pos.z), {
-          radius: this.state === 'hunt' || this.state === 'chase' ? 6.5 : 4.2, speed: 8, strength: this.state === 'hunt' || this.state === 'chase' ? 1.1 : 0.8, decay: 1.0, color: COLORS.monster,
+          radius: this.state === 'hunt' || this.state === 'chase' ? 6.5 : sneaking ? 2.4 : 4.2, speed: 8, strength: this.state === 'hunt' || this.state === 'chase' ? 1.1 : 0.8, decay: 1.0, color: COLORS.monster,
         });
       }
     }
@@ -649,13 +790,14 @@ export class Monster {
     const agitated = this.state === 'hunt' || this.state === 'windup' || this.state === 'chase';
     const loud = agitated ? 1.0 : this.state === 'sniff' || this.state === 'search' ? 0.7 : 0.45;
     this.breathT -= dt;
-    if (this.breathT <= 0 && this.voice) {
+    const silent = this.state === 'ambush';
+    if (this.breathT <= 0 && this.voice && !silent) {
       this.inhale = !this.inhale;
       this.voice.breathe(this.inhale, loud);
       this.breathT = agitated ? (this.inhale ? 0.7 : 0.85) : (this.inhale ? 1.3 : 1.9) + Math.random() * 0.7;
     }
     this.croakT = (this.croakT ?? 4) - dt;
-    if (this.croakT <= 0 && this.voice && this.state !== 'windup' && this.state !== 'kill') {
+    if (this.croakT <= 0 && this.voice && this.state !== 'windup' && this.state !== 'kill' && !silent && this.state !== 'stalk') {
       this.croakT = agitated ? 2.5 + Math.random() * 2 : 5 + Math.random() * 7;
       this.voice.croak(this.state === 'sniff' ? 0.4 : loud);
     }

@@ -216,6 +216,21 @@ const game = {
     const soft = o.source === 'player' ? roomK : 1;
     echo.emit(pos, { radius: o.visual ?? o.radius, speed: o.speed ?? 11, strength: (o.strength ?? 1) * soft, decay: o.decay ?? 0.8, color: o.color ?? COLORS.player });
     if (o.source && monster.active) monster.hear(pos, o.radius, o.source, o.kind, player.pos);
+    // "it doesn't repeat. It answers": now and then your tap comes back from where it is
+    if (o.source === 'player' && o.kind === 'click' && monster.active && !siege.active && monster.state !== 'chase') {
+      const md = monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z));
+      if (md > 6 && md < 28 && Math.random() < 0.35) {
+        later(0.4 + Math.random() * 0.35, () => {
+          if (!monster.active) return;
+          audio.monsterClick(monster.headWorld);
+          echo.emit(monster.headWorld.clone(), { radius: 8, speed: 13, strength: 0.9, decay: 0.6, color: COLORS.monster });
+          if (!game.flags.answerHint) {
+            game.flags.answerHint = true;
+            later(1.2, () => game.hint('Твой щелчок вернулся. Не оттуда, откуда должен. [V] — вслушайся.', 4.5));
+          }
+        });
+      }
+    }
     if (o.source === 'player' && siege && siege.active) siege.heard(o.radius);
   },
   hint(text, dur = 4.5, urgent = false) {
@@ -257,6 +272,11 @@ vm.onTouch = (p) => {
 };
 const monster = new Monster(scene, level, audio);
 monster.onKill = () => die();
+monster.onWise = () => {
+  if (game.flags.wiseHint) return;
+  game.flags.wiseHint = true;
+  game.hint('Оно больше не идёт на камни. Оно идёт туда, откуда их бросают.', 4.5, true);
+};
 const extras = new Extras({ level, audio, game, player, scene });
 extras.build();
 extras.monster = monster;
@@ -493,6 +513,18 @@ function objective() {
   if (!f.card && !f.labOpen) return 'Карта доступа — кабинет 9, за затопленным переходом (восток).';
   if (!f.fuseB) return 'Второй ПН-2 — бокс № 2 безэхового блока.';
   return '';
+}
+
+// where the player is heading next (the creature uses it to lie in wait)
+function objectivePos() {
+  const f = game.flags;
+  if (f.called) return null;
+  if (f.powered) return V(9.5, 0, 6);
+  if (f.fuseA && f.fuseB) return V(32, 0, 9.6);
+  if (!f.fuseA) return V(2.5, 0, 18);
+  if (!f.card && !f.labOpen) return V(54.5, 0, 34);
+  if (!f.fuseB) return V(53, 0, 8);
+  return null;
 }
 
 function updateHUD() {
@@ -1161,6 +1193,37 @@ function startGame(fromSave = false) {
 let sightCd = 0, sightT = 0, glitchT = 0;
 let stalkT = 75;
 let directorT = 45;
+let closeT = 0;
+// a narrow spot 9-18 m ahead on the way to the next goal, reachable for the
+// creature without walking past the player
+function planAmbush(goal) {
+  const path = level.findPath(player.pos, goal);
+  if (!path || path.length < 2) return false;
+  let acc = 0, spot = null, fallback = null;
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    const seg = a.distanceTo(b);
+    for (let t = 0; t < seg; t += 0.5) {
+      const p = a.clone().lerp(b, t / seg);
+      const dd = acc + t;
+      if (dd > 9 && dd < 18) {
+        if (!fallback && dd > 12) fallback = p;
+        if (level.clearance(p.x, p.z) < 1.15) { spot = p; break; }
+      }
+    }
+    if (spot) break;
+    acc += seg;
+    if (acc > 18) break;
+  }
+  spot = spot || fallback;
+  if (!spot) return false;
+  const route = level.findPath(monster.pos, spot);
+  if (!route) return false;
+  // don't stroll right past the player on the way there
+  if (route.some((q) => Math.hypot(q.x - player.pos.x, q.z - player.pos.z) < 6)) return false;
+  monster.ambush(spot);
+  return true;
+}
 let drone = null;
 function updateDread(dt) {
   // catching sight of it: lit by your own echo, in view, nothing in between
@@ -1185,13 +1248,36 @@ function updateDread(dt) {
     }
   }
   // the director: it never stays away for long
+  // the director: keeps it a presence. Far and idle for a while -> it comes to
+  // stalk you, or goes ahead to lie in wait on your way; close for too long
+  // without anything happening -> it drifts away, so the fear has a rhythm
   directorT -= dt;
-  if (directorT <= 0 && monster.active && !siege.active) {
-    directorT = 50 + Math.random() * 25;
+  if (monster.active && !siege.active && game.state === 'play') {
     const d = monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z));
-    if (d > 16 && (monster.state === 'wander' || monster.state === 'search')) {
-      const t = level.randomWalkable(player.pos, 8, 3);
-      if (t) monster.goTo(t, 'investigate');
+    const idle = monster.state === 'wander' || monster.state === 'search';
+    if (d < 10 && monster.state !== 'chase') closeT += dt;
+    else closeT = Math.max(0, closeT - dt * 0.5);
+    if (closeT > 55 && idle) {
+      closeT = 0;
+      const far = level.randomWalkable(monster.pos, 26, 16);
+      if (far) monster.goTo(far, 'wander');
+      directorT = 25;
+    }
+    if (directorT <= 0) {
+      directorT = 20 + Math.random() * 15;
+      if (idle && d > 15) {
+        const r = Math.random();
+        const goal = objectivePos();
+        let ambushed = false;
+        if (r < 0.32 && goal) ambushed = planAmbush(goal);
+        if (!ambushed) {
+          if (r < 0.75) monster.stalk(32 + Math.random() * 18);
+          else {
+            const t = level.randomWalkable(player.pos, 8, 3);
+            if (t) monster.goTo(t, 'investigate');
+          }
+        }
+      }
     }
   }
   // footsteps behind you, when it is nowhere near
