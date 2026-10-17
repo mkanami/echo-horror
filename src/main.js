@@ -1074,6 +1074,7 @@ function restoreCheckpoint() {
   level.setDoor('lab', !!game.flags.labOpen);
   level.setDoor('lift', !!game.flags.arrived);
   monster.forcedTarget = c.forced ? c.forced.clone() : null;
+  monster.lures = []; // stones thrown before the death don't count against the retry
   if (c.monster) {
     // put it somewhere far from the player
     let p = level.randomWalkable(player.pos, 28, 16) || c.monster.pos;

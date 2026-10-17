@@ -106,10 +106,13 @@ export class Siege {
 
     // shoring up the lowered shutter
     const R = this.player.keys.has('KeyR');
+    this.braced = false;
     for (const k of ['A', 'B']) {
       const f = ROUTES[k].face;
       const near = Math.hypot(this.player.pos.x - f.x, this.player.pos.z - f.z) < 3.2;
-      if (R && near && this.shut[k] && !(this.phase === 'ram' && this.route === k)) {
+      // under the blows it can't be patched, only held: the hits do less damage
+      if (R && near && this.shut[k] && this.phase === 'ram' && this.route === k) this.braced = true;
+      else if (R && near && this.shut[k]) {
         this.hp[k] = Math.min(100, this.hp[k] + dt * 24);
         this.repairT = (this.repairT || 0) - dt;
         if (this.repairT <= 0) {
@@ -178,7 +181,8 @@ export class Siege {
         this.hitT -= dt;
         if (this.hitT <= 0) {
           this.hitT = 1.25 + Math.random() * 0.35;
-          this.hp[this.route] -= 5 + Math.random() * 3.5;
+          // eased after repeated deaths (see applyAssist in main.js), softened when braced
+          this.hp[this.route] -= (5 + Math.random() * 3.5) * (this.assist ?? 1) * (this.braced ? 0.4 : 1);
           this.audio.play('slam', f, { gain: 1.2, rate: 0.7 + Math.random() * 0.2, wet: 0.8, occ: false });
           this.audio.play('metal_heavy', f, { gain: 0.8, rate: 0.6, wet: 0.8, occ: false });
           echo.emit(f, { radius: 7, speed: 11, strength: 1.3, color: COLORS.monster });
