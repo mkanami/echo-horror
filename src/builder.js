@@ -2,6 +2,7 @@
 // and records XZ colliders for everything that blocks movement.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { echoPoints } from './echo.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
 // rounded surface for realism, sharp box kept for the edge lines
@@ -102,9 +103,13 @@ export class Builder {
     }
     for (const k in this.lines) {
       const g = mergeGeometries(this.lines[k], false);
-      const ls = new THREE.LineSegments(g, lineMaterials[k] || lineMaterials.prop);
+      const lm = lineMaterials[k] || lineMaterials.prop;
+      const ls = new THREE.LineSegments(g, lm);
       ls.matrixAutoUpdate = false;
       group.add(ls);
+      const pts = echoPoints(g, { tint: lm.uniforms.uTint.value, boost: lm.uniforms.uBoost.value });
+      pts.matrixAutoUpdate = false;
+      group.add(pts);
     }
     return group;
   }

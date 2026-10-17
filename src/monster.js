@@ -1,6 +1,6 @@
 // The "second echo" — a blind thing that exists only through sound.
 import * as THREE from 'three';
-import { echo, echoMaterial, COLORS } from './echo.js';
+import { echo, echoMaterial, echoPoints, COLORS } from './echo.js';
 import { taper, sculpt, blob, fbm } from './organic.js';
 
 const PI = Math.PI;
@@ -16,7 +16,11 @@ function buildBody() {
     m.position.set(...pos);
     m.rotation.set(...rot);
     m.scale.set(...scale);
-    if (edges) m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, edges), lmat));
+    if (edges) {
+      const eg = new THREE.EdgesGeometry(geo, edges);
+      m.add(new THREE.LineSegments(eg, lmat));
+      m.add(echoPoints(eg, { tint: 0xffb8a8, boost: 1.2, size: 2.0 }));
+    }
     parent.add(m);
     return m;
   };
@@ -272,6 +276,7 @@ export class Monster {
     this.sniffCd = 0;
     this.curSpeed = 0;
     this.scare = null;
+    this.bashing = null;
     this.body.mats[0].uniforms.uLit.value = 0;
     this.body.mats[1].uniforms.uLit.value = 0;
     if (!this.voice && this.audio.ctx) this.voice = this.audio.createMonsterVoice();
@@ -299,7 +304,7 @@ export class Monster {
 
   // Called for every audible event. source: 'player' | 'stone' | 'machine' | 'world'
   hear(pos, radius, source, kind, playerPos) {
-    if (!this.active || this.state === 'kill' || this.state === 'lunge' || this.state === 'windup') return false;
+    if (!this.active || this.state === 'kill' || this.state === 'lunge' || this.state === 'windup' || this.state === 'scripted') return false;
     const d = tmp.set(pos.x - this.pos.x, 0, pos.z - this.pos.z).length();
     const occ = this.level.occlusion(this.pos, pos);
     const reach = radius * (1.15 - occ * 0.5) * this.assist.hear;
@@ -320,6 +325,12 @@ export class Monster {
       }
     }
     if (this.state === 'recover') return true;
+    // close and certain: it comes running for you
+    if (source === 'player' && pd < 11 && this.suspicion > 0.5 && ['run', 'step', 'click', 'door', 'gasp'].includes(kind) && this.state !== 'chase') {
+      this.startChase();
+      return true;
+    }
+    if (this.state === 'chase') return true;
     // inexact localisation for far sounds
     const err = (1 - prox) * Math.min(3, d * 0.15);
     const t = pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * err, 0, (Math.random() - 0.5) * err));
@@ -341,6 +352,27 @@ export class Monster {
     this.path = null;
     this.sniffCd = 8;
     this.doSniff();
+  }
+
+  startChase() {
+    if (this.state === 'chase' || this.state === 'kill') return;
+    this.setState('chase');
+    this.chaseT = 0;
+    this.lostT = 0;
+    this.repathT = 0;
+    this.audio.monsterRoar(this.headWorld);
+    this.audio.stinger('low', 0.8);
+    echo.emit(this.headWorld, { radius: 9, speed: 12, strength: 1.2, decay: 0.7, color: COLORS.monster });
+    if (this.onChase) this.onChase(true);
+  }
+
+  endChase(lastSeen) {
+    this.target = lastSeen ? lastSeen.clone() : this.pos.clone();
+    this.path = this.level.findPath(this.pos, this.target);
+    if (this.path) this.path.shift();
+    this.setState('search');
+    this.audio.play('m_growl', this.headWorld, { gain: 0.9, rate: 0.7, wet: 0.8 });
+    if (this.onChase) this.onChase(false);
   }
 
   startWindup(playerPos) {
@@ -395,6 +427,34 @@ export class Monster {
           else this.startSniff(true);
         }
         break;
+      case 'scripted':
+        this.speed = this.ramming ? 0 : this.scriptSpeed || 0;
+        break;
+      case 'chase': {
+        this.speed = 3.4 * this.assist.speed;
+        this.chaseT += dt;
+        this.repathT -= dt;
+        const reachable = !player.hidden && this.level.ceilAt(Math.floor(pp.x), Math.floor(pp.z)) >= 1.7;
+        if (reachable) this.lastSeen = pp.clone();
+        if (this.repathT <= 0 && reachable) {
+          this.repathT = 0.35;
+          this.path = this.level.findPath(this.pos, pp);
+          if (this.path) this.path.shift();
+        }
+        // lose you: hidden, crawled away, too far for too long, or it simply tires
+        if (!reachable || pd > 15) this.lostT += dt;
+        else this.lostT = Math.max(0, this.lostT - dt);
+        if (this.lostT > (reachable ? 2.5 : 0.6) || this.chaseT > 24 || (!this.path && reachable)) {
+          this.endChase(this.lastSeen);
+          break;
+        }
+        if (pd < 1.45 && reachable) {
+          this.startWindup(pp);
+          this.lunge.fast = true;
+          if (this.onChase) this.onChase(false);
+        }
+        break;
+      }
       case 'search': {
         this.speed = 0.75;
         if (!this.path || !this.path.length) {
@@ -425,6 +485,14 @@ export class Monster {
           this.pos.x += (pp.x - this.pos.x) * k;
           this.pos.z += (pp.z - this.pos.z) * k;
         }
+        // right up against your hiding place: it hears you breathe unless you don't
+        if (player.hidden && pd < 2.2 && this.stateT > 1.4 && !player.holding) {
+          this.suspicion += dt * 0.55;
+          if (this.suspicion > 0.95) {
+            this.startWindup(pp);
+            break;
+          }
+        }
         if (this.stateT > 3.6) {
           // it moves on, away from the player
           // turn around: pick a spot on the far side from the player
@@ -440,7 +508,7 @@ export class Monster {
         break;
       case 'windup':
         this.speed = 0;
-        if (this.stateT > 1.05) {
+        if (this.stateT > (this.lunge && this.lunge.fast ? 0.55 : 1.05)) {
           this.setState('lunge');
           this.lunge.t = 0;
           this.audio.monsterRoar(this.headWorld);
@@ -453,7 +521,9 @@ export class Monster {
         this.level.collide(p2, 0.3);
         this.pos.copy(p2);
         this.lunge.t += dt;
-        if (Math.hypot(pp.x - this.pos.x, pp.z - this.pos.z) < 0.85) {
+        // a hiding place is no use once it has heard you in it: it tears it open
+        const ld = Math.hypot(pp.x - this.pos.x, pp.z - this.pos.z);
+        if (ld < 0.85 || (player.hidden && ld < 1.7)) {
           this.kill(player);
           break;
         }
@@ -511,6 +581,28 @@ export class Monster {
   }
 
   move(dt) {
+    // a closed door in the way: smash it down
+    if (this.bashing) {
+      this.curSpeed = 0;
+      this.bashT -= dt;
+      if (this.bashT <= 0) {
+        this.bashT = 0.85;
+        const done = this.level.bashDoor(this.bashing);
+        this.audio.play('slam', this.bashing.center, { gain: 1.1, rate: 0.75 + Math.random() * 0.2, wet: 0.8 });
+        echo.emit(this.bashing.center, { radius: 6, speed: 11, strength: 1.2, color: COLORS.monster });
+        if (this.onBash) this.onBash(this.bashing);
+        if (done) this.bashing = null;
+      }
+      return;
+    }
+    if (this.speed > 0 && this.level.slamDoorAhead) {
+      const d = this.level.slamDoorAhead(this.pos, this.path && this.path[0]);
+      if (d) {
+        this.bashing = d;
+        this.bashT = 0.35;
+        return;
+      }
+    }
     if (!this.path || !this.path.length || this.speed <= 0) {
       this.curSpeed = THREE.MathUtils.lerp(this.curSpeed || 0, 0, dt * 6);
       return;
@@ -527,28 +619,34 @@ export class Monster {
     const s = Math.min(d, this.curSpeed * dt);
     this.pos.x += (dx / d) * s;
     this.pos.z += (dz / d) * s;
+    this.keepClear();
+  }
+
+  // keep the feet off walls; the posture (see animate) keeps the rest inside
+  keepClear() {
+    this.level.collide(this.pos, 0.3);
   }
 
   sounds(dt, pd, player) {
     const sp = this.curSpeed || 0;
     if (sp > 0.1 && this.state !== 'lunge') {
       this.stepAcc += sp * dt;
-      const stride = this.state === 'hunt' ? 1.25 : 0.95;
+      const stride = this.state === 'hunt' || this.state === 'chase' ? 1.25 : 0.95;
       if (this.stepAcc > stride) {
         this.stepAcc = 0;
-        const heavy = this.state === 'hunt' ? 1.5 : 0.8;
+        const heavy = this.state === 'hunt' || this.state === 'chase' ? 1.6 : 0.8;
         this.audio.monsterStep(this.pos, heavy);
         if (player) {
           const d = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
-          player.shake = Math.max(player.shake || 0, Math.max(0, 1 - d / 7) * (this.state === 'hunt' ? 1 : 0.6));
+          player.shake = Math.max(player.shake || 0, Math.max(0, 1 - d / 8) * (this.state === 'hunt' || this.state === 'chase' ? 1 : 0.6));
         }
         echo.emit(new THREE.Vector3(this.pos.x, 0.1, this.pos.z), {
-          radius: this.state === 'hunt' ? 6.5 : 4.2, speed: 8, strength: this.state === 'hunt' ? 1.1 : 0.8, decay: 1.0, color: COLORS.monster,
+          radius: this.state === 'hunt' || this.state === 'chase' ? 6.5 : 4.2, speed: 8, strength: this.state === 'hunt' || this.state === 'chase' ? 1.1 : 0.8, decay: 1.0, color: COLORS.monster,
         });
       }
     }
     // breathing rhythm + death-rattle croaks
-    const agitated = this.state === 'hunt' || this.state === 'windup';
+    const agitated = this.state === 'hunt' || this.state === 'windup' || this.state === 'chase';
     const loud = agitated ? 1.0 : this.state === 'sniff' || this.state === 'search' ? 0.7 : 0.45;
     this.breathT -= dt;
     if (this.breathT <= 0 && this.voice) {
@@ -601,6 +699,23 @@ export class Monster {
     if (kill && this.scare) this.scare.t += dt;
     this.obj.position.copy(this.pos);
     this.obj.rotation.y = this.yaw;
+    // fit the room: it folds itself smaller under low ceilings and in the duct,
+    // and narrows its shoulders between close walls
+    {
+      // lowest ceiling where it is and where its head is about to be
+      let ceil = 9;
+      for (const d of [0, 0.6, 1.2]) {
+        const c = this.level.ceilAt(Math.floor(this.pos.x + Math.sin(this.yaw) * d), Math.floor(this.pos.z + Math.cos(this.yaw) * d));
+        if (c > 0) ceil = Math.min(ceil, c);
+      }
+      const side = this.level.clearance ? this.level.clearance(this.pos.x, this.pos.z) : 1;
+      this.lowAhead = ceil < 1.7;
+      const sWant = kill ? 1 : ceil < 1.7 ? 0.66 : THREE.MathUtils.clamp((ceil - 0.1) / 2.65, 0.8, 1);
+      this.fitS = THREE.MathUtils.lerp(this.fitS ?? sWant, sWant, Math.min(1, dt * (sWant < this.fitS ? 6 : 2)));
+      this.tuckK = THREE.MathUtils.lerp(this.tuckK || 0, kill ? 0 : THREE.MathUtils.clamp((0.95 - side) / 0.4, 0, 1), Math.min(1, dt * 4));
+      const sx = this.fitS * (1 - this.tuckK * 0.18);
+      this.obj.scale.set(sx, this.fitS, this.fitS);
+    }
 
     // stop-motion: limbs snap between poses at irregular intervals — the body
     // glides but the joints jerk, which reads as deeply wrong
@@ -635,7 +750,9 @@ export class Monster {
       const s = Math.sin(ph + i * Math.PI);
       return { tx: -s * 0.55 * amp - 0.25, sx: Math.max(0, Math.cos(ph + i * Math.PI)) * 0.9 * amp + 0.45 };
     };
-    const crawl = (this.state === 'hunt' || this.state === 'investigate') && sp > 1.4;
+    const low = !!this.lowAhead;
+    const crawl = ((this.state === 'hunt' || this.state === 'investigate' || this.state === 'chase' || this.state === 'scripted') && sp > 1.4) || low;
+    this.crawling = crawl;
 
     if (kill) {
       spineX = 0.3; neckX = 0.7; headX = -2.05;
@@ -645,6 +762,20 @@ export class Monster {
       hipsY = 1.0;
       arm = () => ({ ux: -2.3 + (Math.random() - 0.5) * 0.2, uz: 0.65, fx: -0.6, hx: 0.6 });
       leg = () => ({ tx: -0.5, sx: 0.8 });
+    } else if (crawl && low) {
+      // flattened into the duct: belly almost on the grating, elbows and knees splayed
+      hipsY = 0.5 + Math.abs(Math.sin(ph)) * 0.03;
+      spineX = 1.5; neckX = -0.12; headX = -1.25;
+      headY = Math.sin(t * 9) * 0.12;
+      jaw = 0.6 + Math.sin(t * 21) * 0.1;
+      arm = (i) => {
+        const s = Math.sin(ph + i * Math.PI);
+        return { ux: -2.75 + s * 0.3, uz: 0.55, fx: 2.3 - Math.max(0, Math.cos(ph + i * Math.PI)) * 0.4, hx: 1.0 };
+      };
+      leg = (i) => {
+        const s = Math.sin(ph + i * Math.PI + 0.6);
+        return { tx: -1.35 - s * 0.25, sx: 2.25 + Math.max(0, -Math.cos(ph + i * Math.PI)) * 0.2 };
+      };
     } else if (crawl) {
       // galloping on all fours
       hipsY = 0.86 + Math.abs(Math.sin(ph)) * 0.08;
@@ -666,6 +797,12 @@ export class Monster {
       headY = Math.sin(t * 1.1) * 0.5;
       headZ = 0.95 * Math.sign(Math.sin(t * 0.37) + 0.3); // listening head-tilt, far too far
       jaw = 0.3 + Math.min(0.7, this.stateT * 0.2);
+    } else if (this.ramming) {
+      // throwing its whole weight against the steel
+      const k = Math.max(0, Math.sin(t * 6));
+      spineX = 0.5 + k * 0.6; neckX = 0.2; headX = -0.6; jaw = 1.0;
+      hipsY = 1.0 - k * 0.15;
+      arm = () => ({ ux: -2.2 + k * 0.6, uz: 0.4, fx: -0.6, hx: 0.5 });
     } else if (this.state === 'windup') {
       spineX = 0.25; neckX = 0.35; headX = -1.25; jaw = 1.2;
       headY = (Math.random() - 0.5) * 0.12;
@@ -684,7 +821,34 @@ export class Monster {
       headY += this.twY;
       headZ += this.twZ;
     }
+    // a wall right in front of its face: it rears up instead of leaning through it
+    if (!kill && !low) {
+      const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+      const want = (crawl ? 1.75 : 1.3) * this.fitS;
+      let clear = want;
+      for (let d = 0.3; d <= want; d += 0.1) {
+        const x = this.pos.x + fx * d, z = this.pos.z + fz * d;
+        if (!this.level.open(Math.floor(x), Math.floor(z)) || this.level.blockedPoint(x, z, 0.1)) {
+          clear = d;
+          break;
+        }
+      }
+      const k = THREE.MathUtils.clamp((clear - 0.45) / (want - 0.45), 0, 1);
+      this.rearK = THREE.MathUtils.lerp(this.rearK ?? 1, k, 0.35);
+      spineX = THREE.MathUtils.lerp(0.12, spineX, this.rearK);
+      neckX = THREE.MathUtils.lerp(0.35, neckX, this.rearK);
+      if (crawl) hipsY = THREE.MathUtils.lerp(1.05, hipsY, this.rearK);
+    }
 
+    // squeezing through: arms drawn in where it's narrow
+    const tuck = this.tuckK || 0;
+    if (tuck > 0.01 && !kill) {
+      const base = arm;
+      arm = (i) => {
+        const p = base(i);
+        return { ux: p.ux * (1 - tuck * 0.35), uz: THREE.MathUtils.lerp(p.uz, -0.06, tuck), fx: p.fx, hx: p.hx };
+      };
+    }
     b.hips.position.y = hipsY;
     b.spine.rotation.x = spineX;
     b.neck.rotation.x = neckX;

@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { Builder, makeObject } from './builder.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { echoMaterial } from './echo.js';
+import { echoMaterial, echoPoints } from './echo.js';
 import * as P from './props.js';
 import { woodLeaf, steelLeaf, liftLeaf, doorFrame, ease } from './doors.js';
 
@@ -19,6 +19,8 @@ export const LOCKER_ROWS = [
   [52.6, 32.28, 0, 3, [1]],
   [26.0, 13.72, Math.PI, 3, [0, 2]],
   [52.0, 21.72, Math.PI, 2, [0]],
+  [2.6, 35.72, Math.PI, 3, [0, 2]],
+  [10.85, 3.28, 0, 3, [1]], // lift hall: somewhere to go when it gets in
 ];
 
 // decorative locked doors on walls: [x, z, nx, nz, plaque]
@@ -31,23 +33,24 @@ export const LOCKED = [
 // per-room surface materials: walls / floor / ceiling
 const H_ = { wall: 'w_hosp', floor: 'f_tile', ceil: 'c_plaster' };
 const SURF = {
-  'Медблок': { wall: 'w_hosp', floor: 'f_tile', ceil: 'c_office' },
-  'Санузел': { wall: 'w_tile', floor: 'f_tile', ceil: 'c_plaster' },
-  'Коридор Б': H_,
-  'Морг': { wall: 'w_tile', floor: 'f_tile', ceil: 'c_plaster' },
+  'Медблок': { wall: 'w_hosp', floor: 'f_tile4', ceil: 'c_office' },
+  'Санузел': { wall: 'w_tile2', floor: 'f_tile3', ceil: 'c_plaster' },
+  'Коридор Б': { wall: 'w_hosp2', floor: 'f_tile', ceil: 'c_plaster' },
+  'Морг': { wall: 'w_tile', floor: 'f_tile3', ceil: 'c_plaster' },
   'Атриум': { wall: 'w_atrium', floor: 'f_terrazzo', ceil: 'c_concrete' },
-  'Западный коридор': { wall: 'w_hosp', floor: 'f_terrazzo', ceil: 'c_plaster' },
-  'Архив': { wall: 'w_paper', floor: 'f_carpet', ceil: 'c_office' },
-  'Затопленный коридор': { wall: 'w_concrete', floor: 'f_water', ceil: 'c_plaster' },
-  'Кабинет 9': { wall: 'w_paper', floor: 'f_water', ceil: 'c_office' },
-  'Шлюз': { wall: 'w_plates', floor: 'f_cfloor', ceil: 'c_concrete' },
+  'Западный коридор': { wall: 'w_hosp', floor: 'f_boards', ceil: 'c_plaster' },
+  'Архив': { wall: 'w_paper2', floor: 'f_parquet', ceil: 'c_office' },
+  'Затопленный коридор': { wall: 'w_bunker', floor: 'f_water', ceil: 'c_plaster' },
+  'Кабинет 9': { wall: 'w_paper', floor: 'f_water2', ceil: 'c_office' },
+  'Шлюз': { wall: 'w_plates2', floor: 'f_conc3', ceil: 'c_concrete' },
   'Безэховый блок': { wall: 'w_iso', floor: 'f_glass', ceil: 'c_concrete' },
-  'Служебный коридор': { wall: 'w_concrete', floor: 'f_grate', ceil: 'c_concrete' },
-  'Генераторная': { wall: 'w_brick', floor: 'f_cfloor', ceil: 'c_concrete' },
-  'Переход': { wall: 'w_hosp', floor: 'f_terrazzo', ceil: 'c_plaster' },
-  'Лифтовый холл': { wall: 'w_hosp', floor: 'f_terrazzo', ceil: 'c_office' },
+  'Служебный коридор': { wall: 'w_bunker', floor: 'f_grate', ceil: 'c_concrete' },
+  'Генераторная': { wall: 'w_brick', floor: 'f_conc3', ceil: 'c_concrete' },
+  'Переход': { wall: 'w_hosp2', floor: 'f_terrazzo', ceil: 'c_plaster' },
+  'Лифтовый холл': { wall: 'w_hall', floor: 'f_rug', ceil: 'c_office' },
   'Лифт': { wall: 'w_plates', floor: 'f_dplate', ceil: 'c_concrete' },
-  'Вентканал': { wall: 'w_plates', floor: 'f_grate', ceil: 'c_concrete' },
+  'Вентканал': { wall: 'w_steel2', floor: 'f_grate', ceil: 'c_concrete' },
+  'Вентшахта': { wall: 'w_steel2', floor: 'f_grate', ceil: 'c_concrete' },
 };
 
 export class Level {
@@ -110,6 +113,10 @@ export class Level {
     this.carve(6, 0, 3, 3, F.METAL, 2.6, 'Лифт');
     // a crawl-only ventilation duct: morgue <-> flooded corridor, too low for the creature
     this.carve(41, 29, 1, 7, F.METAL, 1.25, 'Вентканал');
+    // ventilation shaft from the generator room into the lift hall's hatch (the creature crawls it)
+    this.carve(7, 13, 1, 3, F.METAL, 1.25, 'Вентшахта');
+    this.carve(8, 15, 15, 1, F.METAL, 1.25, null);
+    this.carve(22, 14, 1, 2, F.METAL, 1.25, null);
     // puddles in the morgue and corridor B
     for (const [i, j] of [[31, 41], [32, 41], [31, 42], [38, 39], [39, 39], [38, 40]]) this.cells[j * W + i] = F.WATER;
     // broken glass spilling into the airlock
@@ -125,6 +132,10 @@ export class Level {
     if (t === FLOOR.WATER) return 'f_water';
     if (t === FLOOR.GLASS) return 'f_glass';
     return this.surf(i, j).floor;
+  }
+
+  shaftCell(i, j) {
+    return (i === 7 && j >= 13 && j <= 15) || (j === 15 && i >= 8 && i <= 22) || (i === 22 && j >= 14 && j <= 15);
   }
 
   open(i, j) {
@@ -152,13 +163,33 @@ export class Level {
       wall: echoMaterial({ map: 'wall', scale: 0.45, bump: 1.2 }),
       w_hosp: echoMaterial({ pat: 7, map: 'plaster', scale: 0.45, map2: 'paint', scale2: 0.5, split: 1.45, grime: 0.8 }),
       w_tile: echoMaterial({ pat: 7, map: 'plaster', scale: 0.45, map2: 'wtile', scale2: 0.55, split: 1.9, grime: 0.7 }),
-      w_atrium: echoMaterial({ pat: 7, map: 'plaster', scale: 0.4, map2: 'brick', scale2: 0.4, split: 1.2, grime: 0.6 }),
+      w_atrium: echoMaterial({ pat: 7, map: 'plaster', scale: 0.4, map2: 'brick2', scale2: 0.45, split: 1.25, grime: 0.6 }),
       w_paper: echoMaterial({ pat: 7, map: 'paper', scale: 0.5, map2: 'wood', scale2: 0.6, split: 0.95, grime: 0.6 }),
       w_concrete: echoMaterial({ map: 'wall', scale: 0.45, bump: 1.2, grime: 1 }),
       w_plates: echoMaterial({ map: 'plates', scale: 0.5, grime: 0.5 }),
-      w_iso: echoMaterial({ pat: 7, map: 'wall', scale: 0.45, map2: 'plates', scale2: 0.5, split: 2.2, grime: 0.6 }),
+      w_iso: echoMaterial({ pat: 7, map: 'wall', scale: 0.45, map2: 'corr', scale2: 0.5, split: 2.2, grime: 0.6 }),
       w_brick: echoMaterial({ map: 'brick', scale: 0.4, bump: 1.3, grime: 0.8 }),
       f_tile: echoMaterial({ map: 'tile', scale: 0.5, bump: 1.1, boost: 0.6 }),
+      f_tile3: echoMaterial({ map: 'tile3', scale: 0.55, bump: 1.1, boost: 0.6 }),
+      f_tile4: echoMaterial({ map: 'tile4', scale: 0.5, bump: 1.1, boost: 0.6 }),
+      f_boards: echoMaterial({ map: 'boards', scale: 0.45, bump: 1.2, boost: 0.85 }),
+      f_parquet: echoMaterial({ map: 'parquet', scale: 0.5, boost: 0.85 }),
+      f_water2: echoMaterial({ map: 'parquet', scale: 0.5, pat: 1, wet: 1 }),
+      f_conc3: echoMaterial({ map: 'conc3', scale: 0.4, bump: 1.2 }),
+      f_rug: echoMaterial({ map: 'rug', scale: 0.6, boost: 0.8 }),
+      w_hosp2: echoMaterial({ pat: 7, map: 'plaster4', scale: 0.45, map2: 'paint', scale2: 0.5, split: 1.5, grime: 0.8 }),
+      w_tile2: echoMaterial({ pat: 7, map: 'plaster2', scale: 0.45, map2: 'wtile2', scale2: 0.7, split: 2.0, grime: 0.6 }),
+      w_paper2: echoMaterial({ pat: 7, map: 'paper2', scale: 0.5, map2: 'wood', scale2: 0.6, split: 0.95, grime: 0.6 }),
+      w_bunker: echoMaterial({ pat: 7, map: 'wall', scale: 0.45, map2: 'bunker', scale2: 0.5, split: 1.7, grime: 1 }),
+      w_plates2: echoMaterial({ map: 'plates2', scale: 0.5, grime: 0.5 }),
+      w_hall: echoMaterial({ pat: 7, map: 'plaster4', scale: 0.45, map2: 'pmetal2', scale2: 0.5, split: 1.3, grime: 0.6 }),
+      w_steel2: echoMaterial({ map: 'steel2', scale: 0.6, grime: 0.6 }),
+      pmetal2: echoMaterial({ map: 'pmetal2', scale: 0.8 }),
+      steel2: echoMaterial({ map: 'steel2', scale: 0.9 }),
+      metal3: echoMaterial({ map: 'metal3', scale: 0.9 }),
+      chip: echoMaterial({ map: 'chip', scale: 1.2 }),
+      boardsM: echoMaterial({ map: 'boards', scale: 0.9 }),
+      corrM: echoMaterial({ map: 'corr', scale: 0.7 }),
       f_terrazzo: echoMaterial({ map: 'terrazzo', scale: 0.35, boost: 0.7 }),
       f_carpet: echoMaterial({ map: 'carpet', scale: 0.7, boost: 0.85 }),
       f_water: echoMaterial({ map: 'tile', scale: 0.5, pat: 1, wet: 1 }),
@@ -319,6 +350,7 @@ export class Level {
     const lg = new THREE.BufferGeometry();
     lg.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
     arch.add(new THREE.LineSegments(lg, this.lineMat.arch));
+    arch.add(echoPoints(lg, { boost: 1.0 }));
     this.scene.add(arch);
   }
 
@@ -606,7 +638,7 @@ export class Level {
     // ===== Генераторная (x22-42, z3-14, metal, h6)
     P.generator(B.at(32, 0, 7.2));
     for (const x of [24.5, 39.5]) P.fuelTank(B.at(x, 0, 4.4), 3.5);
-    for (const [x, z] of [[23, 12.8], [23.7, 12.9], [23.2, 12.1], [41, 12.8]]) P.barrel(B.at(x, 0, z));
+    for (const [x, z] of [[26.6, 12.9], [27.3, 12.8], [26.9, 12.1], [41, 12.8]]) P.barrel(B.at(x, 0, z));
     P.barrel(B.at(40.3, 0, 12.7), { fallen: true });
     P.console_(B.at(38.5, 0, 11.3, PI), 2.2);
     P.fan(B.at(41.85, 3.5, 8.5, -PI / 2), 1.3);
@@ -714,9 +746,7 @@ export class Level {
     // ===== lift hall defences: shutter housing over door A, vent hatch B, control panels
     B.box(12.9, 3.15, 8.5, 0.12, 0.7, 3.2, { collide: false, key: 'iron' });
     for (const z of [6.94, 10.06]) B.box(12.93, 1.4, z, 0.1, 2.8, 0.1, { collide: false, key: 'iron' });
-    B.box(7.5, 0.42, 12.995, 0.9, 0.8, 0.01, { collide: false, key: 'void', edges: 0 });
-    for (const [x, y, w, h] of [[7.5, 0.84, 1.0, 0.06], [7.5, 0.0, 1.0, 0.04], [7.0, 0.42, 0.05, 0.86], [8.0, 0.42, 0.05, 0.86]]) B.box(x, y, 12.97, w, h, 0.06, { collide: false, key: 'iron' });
-    for (let k = 1; k < 6; k++) B.box(7.05 + k * 0.15, 0.42, 12.975, 0.02, 0.78, 0.02, { collide: false, key: 'rust', edges: 0, walk: true });
+    for (const [x, y, w, h] of [[7.5, 0.84, 1.0, 0.06], [7.5, 0.0, 1.0, 0.04], [7.0, 0.42, 0.05, 0.86], [8.0, 0.42, 0.05, 0.86]]) B.box(x, y, 12.97, w, h, 0.06, { collide: false, key: 'iron', walk: true });
     for (const x of [6.95, 8.05]) B.box(x, 1.0, 12.94, 0.05, 2.0, 0.05, { collide: false, key: 'iron', walk: true });
     // panels
     B.box(12.95, 1.3, 6.4, 0.06, 0.4, 0.3, { collide: false, key: 'paint' });
@@ -952,6 +982,29 @@ export class Level {
 
     // ---- doors
     const M = this.mat, LM = this.lineMat.prop;
+    // double doors you can slam shut behind you (the creature smashes them)
+    const SLAM = [
+      { id: 'slamMorgue', plane: 'x', at: 35, a: 38, b: 40, open: 0 },
+      { id: 'slamOffice', plane: 'z', at: 29, a: 53, b: 55, open: -Math.PI / 2 },
+      { id: 'slamArchive', plane: 'x', at: 13, a: 26, b: 29, open: Math.PI },
+    ];
+    for (const sd of SLAM) {
+      const w = (sd.b - sd.a) / 2;
+      const door = { id: sd.id, kind: 'slam', closed: false, t: 1, hp: 3, broken: false, leaves: [], box: null };
+      const ends = [[sd.a + 0.03, sd.plane === 'x' ? -Math.PI / 2 : 0], [sd.b - 0.03, sd.plane === 'x' ? Math.PI / 2 : Math.PI]];
+      for (const [u, closedRot] of ends) {
+        const lf = woodLeaf(M, LM, w - 0.03, 2.15, { window: true, mat: 'pwoodb' });
+        if (sd.plane === 'x') lf.pivot.position.set(sd.at, 0, u);
+        else lf.pivot.position.set(u, 0, sd.at);
+        this.scene.add(lf.pivot);
+        door.leaves.push({ pivot: lf.pivot, closedRot, openRot: sd.open });
+      }
+      door.boxClosed = sd.plane === 'x' ? { minX: sd.at - 0.08, maxX: sd.at + 0.08, minZ: sd.a, maxZ: sd.b } : { minX: sd.a, maxX: sd.b, minZ: sd.at - 0.08, maxZ: sd.at + 0.08 };
+      door.center = sd.plane === 'x' ? new THREE.Vector3(sd.at, 1.2, (sd.a + sd.b) / 2) : new THREE.Vector3((sd.a + sd.b) / 2, 1.2, sd.at);
+      this.doors.push(door);
+      this.items.push({ type: 'slam', door: sd.id, pos: door.center.clone(), obj: new THREE.Object3D(), taken: false });
+    }
+
     // rolling shutter A (corridor) and sliding hatch B (vent), lift hall
     const shA = new THREE.Group();
     const slab = (w, h) => {
@@ -974,7 +1027,7 @@ export class Level {
     shB.rotation.y = Math.PI / 2;
     shB.position.set(7.5, 0.47, 12.955);
     this.scene.add(shB);
-    this.doors.push({ id: 'shB', kind: 'shutter', closed: false, t: 0, obj: shB, y0: 0.47, rise: 1.0, speed: 1.3, box: null });
+    this.doors.push({ id: 'shB', kind: 'shutter', closed: false, t: 0, obj: shB, y0: 0.47, rise: 1.0, speed: 1.3, box: null, boxClosed: { minX: 7, maxX: 8, minZ: 12.9, maxZ: 13.02 } });
     for (const [x, z, ry, n, idx] of LOCKER_ROWS)
       for (const i of idx) {
         const lx = (i - (n - 1) / 2) * 0.5;
@@ -1045,6 +1098,18 @@ export class Level {
         }
         continue;
       }
+      if (d.kind === 'slam') {
+        const tg = d.closed ? 0 : 1;
+        d.t += Math.sign(tg - d.t) * Math.min(Math.abs(tg - d.t), dt * (d.closed ? 3.2 : d.broken ? 4 : 1.3));
+        const e = ease(d.t);
+        for (const l of d.leaves) {
+          const over = d.broken ? 0.25 * Math.sign(l.openRot - l.closedRot || 1) : 0;
+          l.pivot.rotation.y = l.closedRot + (l.openRot + over - l.closedRot) * e + (d.shudder > 0 ? Math.sin(d.shudder * 70) * 0.03 * d.shudder : 0);
+        }
+        if (d.shudder > 0) d.shudder = Math.max(0, d.shudder - dt * 2);
+        d.box = d.t < 0.5 && !d.broken ? d.boxClosed : null;
+        continue;
+      }
       if (d.kind === 'shutter') {
         const tg = d.closed ? 1 : 0;
         d.t += Math.sign(tg - d.t) * Math.min(Math.abs(tg - d.t), dt * d.speed);
@@ -1058,6 +1123,33 @@ export class Level {
       if (d.kind === 'hinge') for (const l of d.leaves) l.pivot.rotation.y = l.closedRot + l.dir * 1.72 * e;
       if (d.kind === 'slide') for (const l of d.leaves) l.obj.position.x = l.base + l.s * 1.45 * e;
     }
+  }
+
+  toggleSlam(id) {
+    const d = this.door(id);
+    if (!d || d.broken) return null;
+    d.closed = !d.closed;
+    return d.closed;
+  }
+
+  // one blow of the creature; returns true when the door gives way
+  bashDoor(d) {
+    d.hp -= 1;
+    d.shudder = 1;
+    if (d.hp <= 0) {
+      d.broken = true;
+      d.closed = false;
+      return true;
+    }
+    return false;
+  }
+
+  slamDoorAhead(pos) {
+    for (const d of this.doors) {
+      if (d.kind !== 'slam' || d.broken || !d.closed || d.t > 0.5) continue;
+      if (Math.hypot(d.center.x - pos.x, d.center.z - pos.z) < 1.15) return d;
+    }
+    return null;
   }
 
   setShutter(which, closed) {
@@ -1100,7 +1192,7 @@ export class Level {
               this._push(pos, r, c.minX, c.maxX, c.minZ, c.maxZ);
             }
         }
-      for (const d of this.doors) if (d.box && (d.closed || d.kind === 'shutter')) this._push(pos, r, d.box.minX, d.box.maxX, d.box.minZ, d.box.maxZ);
+      for (const d of this.doors) if (d.box && (d.closed || d.kind === 'shutter' || d.kind === 'slam') && !(this._navBuild && d.kind === 'slam')) this._push(pos, r, d.box.minX, d.box.maxX, d.box.minZ, d.box.maxZ);
     }
   }
 
@@ -1133,6 +1225,7 @@ export class Level {
 
   // ------------------------------------------------------------ navigation
   buildNav() {
+    this._navBuild = true;
     const S = (this.navS = 0.25);
     const NW = (this.NW = W / S), NH = (this.NH = H / S);
     const grid = () => {
@@ -1140,7 +1233,9 @@ export class Level {
       for (let j = 0; j < NH; j++)
         for (let i = 0; i < NW; i++) {
           const x = (i + 0.5) * S, z = (j + 0.5) * S;
-          g[j * NW + i] = this.open(Math.floor(x), Math.floor(z)) && this.ceil[Math.floor(z) * W + Math.floor(x)] >= 1.7 && !this.blockedPoint(x, z, 0.3) ? 1 : 0;
+          const ci = Math.floor(z) * W + Math.floor(x);
+          const crawlOk = this.ceil[ci] >= 1.7 || this.shaftCell(Math.floor(x), Math.floor(z));
+          g[j * NW + i] = this.open(Math.floor(x), Math.floor(z)) && crawlOk && !this.blockedPoint(x, z, 0.3) ? 1 : 0;
         }
       return g;
     };
@@ -1169,6 +1264,39 @@ export class Level {
     const g = grid();
     for (let k = 0; k < g.length; k++) g[k] &= this.navReach[k];
     this.nav = g;
+    this._navBuild = false;
+    // clearance from obstacles (m) — keeps the creature's bulk in the middle of corridors
+    const D = new Float32Array(NW * NH);
+    for (let k = 0; k < D.length; k++) D[k] = g[k] ? 1e4 : 0;
+    const relax = (k, m, c) => { if (D[m] + c < D[k]) D[k] = D[m] + c; };
+    for (let j = 0; j < NH; j++)
+      for (let i = 0; i < NW; i++) {
+        const k = j * NW + i;
+        if (!D[k]) continue;
+        if (i > 0) relax(k, k - 1, 1);
+        if (j > 0) relax(k, k - NW, 1);
+        if (i > 0 && j > 0) relax(k, k - NW - 1, 1.414);
+        if (i < NW - 1 && j > 0) relax(k, k - NW + 1, 1.414);
+      }
+    for (let j = NH - 1; j >= 0; j--)
+      for (let i = NW - 1; i >= 0; i--) {
+        const k = j * NW + i;
+        if (!D[k]) continue;
+        if (i < NW - 1) relax(k, k + 1, 1);
+        if (j < NH - 1) relax(k, k + NW, 1);
+        if (i < NW - 1 && j < NH - 1) relax(k, k + NW + 1, 1.414);
+        if (i > 0 && j < NH - 1) relax(k, k + NW - 1, 1.414);
+      }
+    for (let k = 0; k < D.length; k++) D[k] = Math.min(D[k], 40) * S;
+    this.navDist = D;
+  }
+
+  // free space around a point (m from the nearest wall or furniture), as the creature feels it
+  clearance(x, z) {
+    if (!this.navDist) return 1;
+    const [i, j] = this.navCell(x, z);
+    if (i < 0 || j < 0 || i >= this.NW || j >= this.NH) return 0;
+    return this.navDist[j * this.NW + i] + 0.3;
   }
 
   navCell(x, z) {
@@ -1231,6 +1359,14 @@ export class Level {
       const dx = Math.abs(x - b[0]), dy = Math.abs(y - b[1]);
       return Math.max(dx, dy) + 0.414 * Math.min(dx, dy);
     };
+    // an area scripted movement must route around (start/goal inside it disable it)
+    let av = null;
+    if (this.avoid) {
+      const A = this.avoid, s = this.navS;
+      av = [Math.floor(A.minX / s), Math.ceil(A.maxX / s), Math.floor(A.minZ / s), Math.ceil(A.maxZ / s)];
+      const inA = (c) => c[0] >= av[0] && c[0] < av[1] && c[1] >= av[2] && c[1] < av[3];
+      if (inA(a) || inA(b)) av = null;
+    }
     g[start] = 0;
     push(start, hfn(start));
     let iter = 0;
@@ -1246,8 +1382,10 @@ export class Level {
           const nx = x + dx, ny = y + dy;
           if (!this.walkable(nx, ny)) continue;
           if (dx && dy && (!this.walkable(x + dx, y) || !this.walkable(x, y + dy))) continue;
+          if (av && nx >= av[0] && nx < av[1] && ny >= av[2] && ny < av[3]) continue;
           const m = ny * NW + nx;
-          const ng = g[n] + (dx && dy ? 1.414 : 1);
+          const cl = this.navDist ? this.navDist[m] : 1;
+          const ng = g[n] + (dx && dy ? 1.414 : 1) * (1 + Math.max(0, 0.7 - cl) * 4);
           if (ng < g[m]) {
             g[m] = ng;
             came[m] = n;
@@ -1281,10 +1419,13 @@ export class Level {
   navLine(a, b) {
     const d = a.distanceTo(b);
     const n = Math.ceil(d / 0.1);
+    // don't shortcut along walls: a straight run must keep the clearance its ends have
+    const need = this.navDist ? Math.min(0.6, this.clearance(a.x, a.z) - 0.3, this.clearance(b.x, b.z) - 0.3) - 0.05 : -1;
     for (let s = 1; s < n; s++) {
       const t = s / n;
       const [i, j] = this.navCell(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t);
       if (!this.walkable(i, j)) return false;
+      if (need > 0 && this.navDist[j * this.NW + i] < need) return false;
     }
     return true;
   }

@@ -93,7 +93,9 @@ export function doorFrame(M, L, w, h, mat = 'pwood') {
   part(g, B(0.09, h + 0.09, d), M[mat], L, [w / 2 + 0.045, (h + 0.09) / 2, d / 2]);
   part(g, B(w + 0.18, 0.09, d), M[mat], L, [0, h + 0.045, d / 2]);
   // dark recess behind the leaf
-  part(g, B(w, h, 0.02), M.void, null, [0, h / 2, 0.005]);
+  // (a thin sheet entirely on this side: walls have no thickness, so anything
+  // set into them shows through on the other side)
+  part(g, B(w, h, 0.003), M.void, null, [0, h / 2, 0.006]);
   return g;
 }
 

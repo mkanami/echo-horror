@@ -6,7 +6,8 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { AfterimagePass } from 'three/examples/jsm/postprocessing/AfterimagePass.js';
-import { echo, COLORS, createDust } from './echo.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { echo, COLORS, createDust, setRelief, setListen } from './echo.js';
 import { AudioEngine } from './audio.js';
 import { Level } from './level.js';
 import { Player } from './player.js';
@@ -14,6 +15,7 @@ import { Monster } from './monster.js';
 import { INTRO, NOTES, TIPS, ENDING } from './story.js';
 import { Siege, SIEGE_TIME } from './siege.js';
 import { ViewModel } from './viewmodel.js';
+import { Extras } from './extras.js';
 
 const $ = (id) => document.getElementById(id);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -26,11 +28,35 @@ renderer.setClearColor(0x000000);
 $('app').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.05, 120);
+const camera = new THREE.PerspectiveCamera(80, innerWidth / innerHeight, 0.05, 120);
 camera.rotation.order = 'YXZ';
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
+// contact shadows in corners, under furniture, in the folds of bodies
+const gtao = new GTAOPass(scene, camera, innerWidth, innerHeight);
+gtao.output = GTAOPass.OUTPUT.Default;
+// walls are single faces seen from either side, and their winding doesn't always
+// agree with their normals: draw every face, with the normal turned toward the
+// eye — otherwise AO "sees" the rooms behind a wall, or blackens the wall itself
+gtao.normalMaterial = new THREE.ShaderMaterial({
+  vertexShader: `varying vec3 vN; varying vec3 vV;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalMatrix * normal; vV = -mv.xyz; gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `varying vec3 vN; varying vec3 vV;
+    void main() { vec3 n = normalize(vN); if (dot(n, vV) < 0.0) n = -n; gl_FragColor = vec4(n * 0.5 + 0.5, 1.0); }`,
+  side: THREE.DoubleSide,
+  blending: THREE.NoBlending,
+});
+gtao.blendIntensity = 0.85;
+gtao.updateGtaoMaterial({ radius: 0.55, distanceExponent: 1.4, thickness: 1.2, scale: 1.0, samples: 12 });
+gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
+// AO is soft by nature: compute it at half resolution (the denoiser hides the difference)
+{
+  const setSize = gtao.setSize.bind(gtao);
+  gtao.setSize = (w, h) => setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
+  gtao.setSize(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio());
+}
+composer.addPass(gtao);
 // view-model (hands + cane) drawn on top so it never clips into walls
 const vm = new ViewModel();
 const vmPass = new RenderPass(vm.scene, camera);
@@ -38,10 +64,17 @@ vmPass.clear = false;
 vmPass.clearDepth = true;
 // the implant lags: images linger and smear as they fade (the world only —
 // your own hands are drawn after it and stay crisp)
-const afterimage = new AfterimagePass(0.74);
+const afterimage = new AfterimagePass(0.42);
 composer.addPass(afterimage);
+// (distance haze is drawn by the echo shader itself, where the distance is known)
 composer.addPass(vmPass);
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.38, 0.6, 0.18);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.26, 0.6, 0.3);
+// the glow is a blur anyway: half resolution costs half and looks the same
+{
+  const setSize = bloom.setSize.bind(bloom);
+  bloom.setSize = (w, h) => setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
+  bloom.setSize(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio());
+}
 composer.addPass(bloom);
 const fx = new ShaderPass({
   uniforms: {
@@ -52,46 +85,84 @@ const fx = new ShaderPass({
     uFear: { value: 0 },
     uFlash: { value: 0 },
     uRes: { value: new THREE.Vector2(innerWidth, innerHeight) },
+    uBlur: { value: new THREE.Vector2() },
+    uExposure: { value: 1 },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float uTime, uFear, uFlash, uGlitch, uWhite; uniform vec2 uRes; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float uTime, uFear, uFlash, uGlitch, uWhite; uniform vec2 uRes; uniform vec2 uBlur; uniform float uExposure; varying vec2 vUv;
     float rand(vec2 c){ return fract(sin(dot(c, vec2(12.9898,78.233))) * 43758.5453); }
     void main(){
       vec2 c = vUv - 0.5;
-      vec2 uv = vUv + c * dot(c,c) * (0.07 + uFear * 0.12);
+      // wide body-camera lens: strong barrel, rescaled so the frame stays filled
+      float kb = 0.3 + uFear * 0.12;
+      vec2 uv = 0.5 + c * (1.0 + kb * dot(c, c)) / (1.0 + kb * 0.25);
       uv.x += sin(uv.y * 40.0 + uTime * 30.0) * 0.0015 * uFear * uFear;
       float band = floor(uv.y * 34.0) + floor(uTime * 24.0) * 7.0;
       uv.x += (rand(vec2(band, 1.0)) - 0.5) * 0.12 * uGlitch * step(0.62, rand(vec2(band, 2.0)));
       uv.y += (rand(vec2(floor(uTime * 24.0), 3.0)) - 0.5) * 0.03 * uGlitch;
-      float ab = 0.0012 + uFear * 0.007 + uGlitch * 0.03;
-      vec3 col = vec3(texture2D(tDiffuse, uv + c*ab).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - c*ab).b);
-      float vig = smoothstep(0.9, 0.18, length(c) * (1.0 + uFear * 0.6));
+      // cheap-lens fringing, growing toward the edges; motion smear along the camera's swing
+      vec2 ca = c * (0.0015 + dot(c, c) * 0.021 + uFear * 0.006 + uGlitch * 0.03);
+      vec3 col;
+      if (dot(uBlur, uBlur) < 1e-7) col = vec3(texture2D(tDiffuse, uv + ca).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - ca).b);
+      else {
+        col = vec3(0.0);
+        for (int i = 0; i < 7; i++) {
+          vec2 o = uBlur * (float(i) / 6.0 - 0.5);
+          col += vec3(texture2D(tDiffuse, uv + o + ca).r, texture2D(tDiffuse, uv + o).g, texture2D(tDiffuse, uv + o - ca).b);
+        }
+        col /= 7.0;
+      }
+      col *= uExposure;
+      // phosphor bleed: the beam spreads a little along the scanline
+      vec2 px = vec2(1.0 / uRes.x, 0.0);
+      vec3 bleed = (texture2D(tDiffuse, uv + px * 1.5).rgb + texture2D(tDiffuse, uv - px * 1.5).rgb) * 0.5;
+      bleed += (texture2D(tDiffuse, uv + px * 4.0).rgb + texture2D(tDiffuse, uv - px * 4.0).rgb) * 0.25;
+      col = col + max(bleed - col, 0.0) * 0.45;
+      // halation: bright light picks up a warm fringe
+      float hl = max(max(bleed.r, bleed.g), bleed.b);
+      col += vec3(0.07, 0.025, 0.01) * smoothstep(0.25, 0.9, hl);
+      float vig = mix(1.0, smoothstep(0.92, 0.12, length(c) * (1.0 + uFear * 0.6)), 0.85);
       col *= vig;
-      // implant feed: coarse grain, a rolling interference band, quantised levels
-      float gr = rand(floor(vUv * uRes * 0.5) + fract(uTime * 7.13)) - 0.5;
-      col += gr * (0.038 + uFear * 0.05);
-      float bandY = fract(uTime * 0.05 + rand(vec2(floor(uTime * 0.5), 9.0)) * 0.3);
-      float inBand = smoothstep(0.02, 0.0, abs(vUv.y - bandY));
-      col += inBand * (rand(vec2(vUv.y * 300.0, uTime)) - 0.5) * 0.08;
-      col *= 1.0 - inBand * 0.25;
-      col = floor(col * 36.0 + rand(vUv * uRes + uTime) * 0.9) / 36.0;
-      // grade: drained, cold, crushed blacks, like a damaged night-vision feed
-      float gl = dot(col, vec3(0.3, 0.55, 0.15));
+      // filmic shoulder before the tube eats its share of the light
+      col = col * (1.0 + col * 0.15) / (1.0 + col * 0.6);
+      col *= 1.02;
+      // lift the mid-greys (black stays black: silence stays dark)
+      col = pow(max(col, 0.0), vec3(0.84));
+      // high-res CRT: scanlines, aperture-grille phosphors, slow refresh bar, faint interlace
+      float sl = 0.5 + 0.5 * sin(gl_FragCoord.y * 3.14159 * 0.5);
+      float slDepth = mix(0.38, 0.24, smoothstep(0.1, 0.7, dot(col, vec3(0.33))));
+      col *= ((1.0 - slDepth) + slDepth * 2.0 * sl * 0.92) * (1.0 + slDepth * 0.25);
+      float m3 = mod(gl_FragCoord.x, 3.0);
+      vec3 mask = m3 < 1.0 ? vec3(1.0, 0.84, 0.84) : m3 < 2.0 ? vec3(0.84, 1.0, 0.84) : vec3(0.84, 0.84, 1.0);
+      col *= mix(vec3(1.0), mask, 0.8) * 1.08;
+      float bar = smoothstep(0.14, 0.0, abs(fract(vUv.y * 0.6 - uTime * 0.07) - 0.5));
+      col *= 1.0 + bar * 0.08;
+      col *= 1.0 - 0.025 * step(0.5, fract(gl_FragCoord.y * 0.25 + floor(uTime * 30.0) * 0.5));
+      col += (rand(vUv * uRes + fract(uTime * 7.13)) - 0.5) * (0.016 + uFear * 0.04);
+      // tube corners and the dark glass at the very edge
+      vec2 cc = abs(uv - 0.5) * 2.0;
+      float corner = smoothstep(1.0, 0.93, max(cc.x, cc.y) + pow(min(cc.x, cc.y), 6.0) * 0.06);
+      col *= corner;
+      // grade: drained and cold in the shadows, near-neutral in the light;
       // blood keeps its colour while everything else is drained
+      float gl = dot(col, vec3(0.3, 0.55, 0.15));
       float redness = smoothstep(0.015, 0.09, col.r - max(col.g, col.b));
-      col = mix(vec3(gl), col, mix(0.45, 1.15, redness));
-      col *= vec3(0.9, 0.98, 1.05);
-      col = max(col - 0.01, 0.0) * 1.05;
+      col = mix(vec3(gl), col, mix(0.42, 1.15, redness));
+      vec3 shadowT = vec3(0.86, 0.97, 1.08), lightT = vec3(1.03, 1.0, 0.95);
+      col *= mix(shadowT, lightT, smoothstep(0.05, 0.6, gl));
+      // soft toe: deep shadow keeps a trace of shape instead of crushing to black
+      col = col * 1.02 + vec3(0.004) * smoothstep(0.0, 0.03, dot(col, vec3(0.33)));
       float lum = max(max(col.r, col.g), col.b);
       col = mix(col, vec3(lum * 1.4 + 0.25, 0.0, 0.0), uFlash * 0.8);
       col = mix(col, vec3(1.0, 0.92, 0.9) - col * 0.6, uWhite);
       gl_FragColor = vec4(col, 1.0);
     }`,
 });
-composer.addPass(fx);
+// anti-alias the scene first, then lay the CRT over it (so the mask stays sharp)
 const smaa = new SMAAPass(Math.max(1, innerWidth * renderer.getPixelRatio()), Math.max(1, innerHeight * renderer.getPixelRatio()));
 composer.addPass(smaa);
+composer.addPass(fx);
 composer.addPass(new OutputPass());
 
 addEventListener('resize', () => {
@@ -110,6 +181,7 @@ const dust = createDust();
 scene.add(dust);
 audio.occlusion = (pos) => level.occlusion(camera.position, pos);
 
+let roomK = 1; // 0.55 in a cupboard of a room .. 1 in corridors and halls
 const game = {
   state: 'menu', // menu | play | paused | note | dying | dead | end
   flags: {},
@@ -118,7 +190,8 @@ const game = {
   checkpoint: null,
   fear: 0,
   noise(pos, o) {
-    echo.emit(pos, { radius: o.visual ?? o.radius, speed: o.speed ?? 11, strength: o.strength ?? 1, decay: o.decay ?? 0.8, color: o.color ?? COLORS.player });
+    const soft = o.source === 'player' ? roomK : 1;
+    echo.emit(pos, { radius: o.visual ?? o.radius, speed: o.speed ?? 11, strength: (o.strength ?? 1) * soft, decay: o.decay ?? 0.8, color: o.color ?? COLORS.player });
     if (o.source && monster.active) monster.hear(pos, o.radius, o.source, o.kind, player.pos);
     if (o.source === 'player' && siege && siege.active) siege.heard(o.radius);
   },
@@ -161,6 +234,22 @@ vm.onTouch = (p) => {
 };
 const monster = new Monster(scene, level, audio);
 monster.onKill = () => die();
+const extras = new Extras({ level, audio, game, player, scene });
+extras.build();
+extras.monster = monster;
+let chaseHinted = false;
+monster.onChase = (on) => {
+  if (on) {
+    player.shake = Math.max(player.shake || 0, 0.8);
+    if (!chaseHinted) {
+      chaseHinted = true;
+      game.hint('Оно гонится. Беги [Shift], захлопни дверь, спрячься в шкафчик или уйди в вентканал.', 5, true);
+    }
+  }
+};
+monster.onBash = (d) => {
+  player.shake = Math.max(player.shake || 0, Math.max(0, 1 - d.center.distanceTo(camera.position) / 9));
+};
 
 // ---- lift hall siege
 const radarCtx = () => document.getElementById('radar-c').getContext('2d');
@@ -175,17 +264,18 @@ const siegeUI = {
   update(sg) {
     const p = Math.min(1, sg.t / SIEGE_TIME);
     $('sg-lift').style.width = `${p * 100}%`;
-    $('sg-floor').textContent = sg.arrived ? 'ЗДЕСЬ' : `−${Math.max(1, Math.ceil(9 - p * 8))} ЯР.`;
-    $('sg-power').style.width = `${sg.power}%`;
-    $('sg-power').classList.toggle('low', sg.power < 20);
-    $('sg-pw').textContent = sg.blackout ? '—' : `${Math.ceil(sg.power)}%`;
-    $('sg-A').textContent = `ДВЕРЬ: ${sg.shut.A ? 'ЗАКРЫТА' : 'ОТКРЫТА'}`;
-    $('sg-B').textContent = `ЛЮК: ${sg.shut.B ? 'ЗАКРЫТ' : 'ОТКРЫТ'}`;
+    $('sg-floor').textContent = sg.arrived ? 'ЗДЕСЬ' : `${Math.ceil(SIEGE_TIME - sg.t)} с`;
+    const hpOf = (k) => (sg.broken[k] > 0 ? 'ВЫРВАНА' : `${Math.ceil(sg.hp[k])}%`);
+    $('sg-power').style.width = `${sg.shut.A ? sg.hp.A : sg.shut.B ? sg.hp.B : 0}%`;
+    $('sg-power').classList.toggle('low', (sg.shut.A ? sg.hp.A : sg.hp.B) < 30);
+    $('sg-pw').textContent = sg.shut.A ? 'ДВЕРЬ' : sg.shut.B ? 'ЛЮК' : '—';
+    $('sg-A').textContent = `ДВЕРЬ ${sg.shut.A ? '▼' : '▲'} ${hpOf('A')}`;
+    $('sg-B').textContent = `ЛЮК ${sg.shut.B ? '▼' : '▲'} ${hpOf('B')}`;
     $('sg-A').classList.toggle('shut', sg.shut.A);
     $('sg-B').classList.toggle('shut', sg.shut.B);
     $('sg-A').textContent += ' [1]';
     $('sg-B').textContent += ' [2]';
-    $('sg-warn').textContent = sg.warn === 'doorA' ? (sg.shut.A ? 'БЬЁТСЯ В ДВЕРЬ' : 'У ДВЕРИ') : sg.warn === 'ventB' ? (sg.shut.B ? 'БЬЁТСЯ В ЛЮК' : 'У ЛЮКА') : '';
+    $('sg-warn').textContent = sg.phase === 'ram' ? (sg.route === 'A' ? 'БЬЁТСЯ В ДВЕРЬ' : 'БЬЁТСЯ В ЛЮК') : sg.phase === 'squeeze' ? 'ЛЕЗЕТ ВНУТРЬ' : sg.phase === 'inside' ? 'ОНО В ХОЛЛЕ' : '';
   },
 };
 function drawRadar(node) {
@@ -216,13 +306,7 @@ function drawRadar(node) {
   }
 }
 let siege = null;
-siege = new Siege({
-  audio, level, game, player, monster, ui: siegeUI,
-  onAttack: (pos) => {
-    monster.spawn(pos.clone().setY(0), 'wander');
-    monster.kill(player);
-  },
-});
+siege = new Siege({ audio, level, game, player, monster, ui: siegeUI });
 game.onLiftArrived = () => liftArrive();
 level.onShutter = (d, closed) => {
   const p = d.obj.position.clone();
@@ -243,8 +327,13 @@ addEventListener('keydown', (e) => {
     if (e.code === 'KeyF') player.click();
     if (e.code === 'KeyC' && !(player.crouch && level.ceilAt(Math.floor(player.pos.x), Math.floor(player.pos.z)) < 1.7)) player.crouch = !player.crouch;
     if (e.code === 'KeyE') interact();
+    if (e.code === 'KeyG' && extras.throwClock(camera)) vm.throw('clock');
     if (siege && siege.active && ['Digit1', 'Digit2', 'Digit3'].includes(e.code)) {
       $('brief').classList.add('hidden');
+      if (e.code === 'Digit1' || e.code === 'Digit2') {
+        const it = level.items.find((i) => i.type === (e.code === 'Digit1' ? 'shutterA' : 'shutterB'));
+        if (it && it.pos.distanceTo(camera.position) < 3) vm.act('press', it.pos);
+      }
       if (e.code === 'Digit1') siege.toggle('A');
       if (e.code === 'Digit2') siege.toggle('B');
       if (e.code === 'Digit3') {
@@ -267,7 +356,10 @@ canvas.addEventListener('mousedown', (e) => {
     lock();
     dragLook = true;
   }
-  if (e.button === 0 && game.state === 'play' && pointerLocked) player.throwStone(scene);
+  if (e.button === 0 && game.state === 'play' && pointerLocked) {
+    if (player.stones > 0 && !player.frozen) vm.throw();
+    player.throwStone(scene);
+  }
   if (e.button === 2) player.keys.add('Mouse2');
 });
 addEventListener('mouseup', (e) => {
@@ -295,18 +387,19 @@ $('sens').addEventListener('input', (e) => (sens = +e.target.value));
 
 // ---- graphics quality
 const QUALITY = {
-  high: { pr: 1.0, smaa: true, dust: true, bloom: true },
-  mid: { pr: 0.75, smaa: true, dust: true, bloom: true },
-  low: { pr: 0.6, smaa: false, dust: false, bloom: false },
+  high: { pr: 1.5, smaa: true, dust: true, bloom: true, ao: true },
+  mid: { pr: 1.0, smaa: true, dust: true, bloom: true, ao: true },
+  low: { pr: 0.75, smaa: false, dust: false, bloom: false, ao: false },
 };
 function applyQuality(q) {
   const Q = QUALITY[q] || QUALITY.high;
-  // a deliberately coarse, crisp-pixel feed
-  renderer.setPixelRatio(Q.pr);
-  composer.setPixelRatio ? composer.setPixelRatio(Q.pr) : null;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, Q.pr));
+  composer.setPixelRatio ? composer.setPixelRatio(Math.min(devicePixelRatio, Q.pr)) : null;
   composer.setSize(innerWidth, innerHeight);
   smaa.enabled = Q.smaa;
   bloom.enabled = Q.bloom;
+  gtao.enabled = Q.ao;
+  setRelief(Q.ao ? 1 : 0); // parallax relief on mid and high
   dust.visible = Q.dust;
   document.querySelectorAll('.quality').forEach((el) => (el.value = q));
   try { localStorage.setItem('echo.quality', q); } catch (_) {}
@@ -389,8 +482,8 @@ function updateHUD() {
   const sm = $('m-stamina');
   sm.querySelector('i').style.width = `${player.stamina * 100}%`;
   sm.style.opacity = player.stamina < 0.99 ? 1 : 0.25;
-  $('stones').textContent = player.stones ? `КАМНИ: ${player.stones}` : '';
-  $('stance').textContent = player.listening ? 'ВСЛУШИВАЕШЬСЯ' : player.holding ? 'НЕ ДЫШИШЬ' : player.hidden ? 'В ШКАФЧИКЕ' : player.crouch ? 'КРАДЁШЬСЯ' : '';
+  $('stones').textContent = [player.stones ? `КАМНИ: ${player.stones}` : '', extras.held.length ? `БУДИЛЬНИКИ: ${extras.held.length}` : ''].filter(Boolean).join('   ');
+  $('stance').textContent = player.listening ? 'ВСЛУШИВАЕШЬСЯ' : player.holding ? 'НЕ ДЫШИШЬ' : player.hidden ? (player.hidden.low ? 'ПОД КРОВАТЬЮ' : 'В ШКАФЧИКЕ') : player.crouch ? 'КРАДЁШЬСЯ' : '';
 }
 
 // ------------------------------------------------------------------ interaction
@@ -432,12 +525,13 @@ function promptFor(it) {
     case 'cab': return f.arrived ? '[E] Ехать наверх' : '';
     case 'labdoor': return f.card ? (hold && hold.it.type === 'labdoor' ? `Открываешь медленно… ${Math.round((hold.t / 2.5) * 100)}%` : '[держи E] Приложить карту и открыть тихо') : 'Шлюз заперт. Нужна карта доступа.';
     case 'locked': return '[E] Дёрнуть ручку';
-    case 'locker': return player.hidden ? '[E] Выйти' : '[E] Спрятаться в шкафчик';
+    case 'slam': { const d = level.door(it.door); return d.broken ? 'Дверь выбита.' : d.closed ? '[E] Открыть дверь' : '[E] Захлопнуть дверь (громко)'; }
+    case 'locker': return it.low ? (player.hidden ? '[E] Вылезти' : '[E] Залезть под кровать') : player.hidden ? '[E] Выйти' : '[E] Спрятаться в шкафчик';
     case 'shutterA': return siege.active ? `[E] ${siege.shut.A ? 'Поднять' : 'Опустить'} заслонку двери` : 'Пульт заслонки. Без питания.';
     case 'shutterB': return siege.active ? `[E] ${siege.shut.B ? 'Открыть' : 'Закрыть'} люк вентиляции` : 'Пульт люка вентиляции. Без питания.';
     case 'seismo': return siege.active ? '[E] Сейсмодатчик (−2% питания)' : 'Сейсмодатчик. Экран мёртв.';
   }
-  return '';
+  return extras.prompt(it) || '';
 }
 
 function take(it) {
@@ -469,11 +563,12 @@ function updateHold(dt) {
     if (hold.it.type === 'panel') {
       // each pump of the priming lever clanks through the whole room
       hold.tick = 1.0;
-      vm.reach();
+      vm.act('pump', hold.it.pos);
       audio.play('metal_heavy', GEN_POS, { gain: 0.8, rate: 0.9 + Math.random() * 0.2, wet: 0.9 });
       game.noise(GEN_POS.clone(), { radius: 7, visual: 6, source: 'player', kind: 'door', color: COLORS.machine, strength: 0.8 });
     } else {
       hold.tick = 0.9;
+      vm.act('push', LAB_DOOR);
       audio.play('door', LAB_DOOR, { gain: 0.18, rate: 0.7, wet: 0.4 });
       game.noise(LAB_DOOR.clone(), { radius: 2.2, visual: 2.5, source: 'player', kind: 'door', color: COLORS.player, strength: 0.4 });
     }
@@ -490,10 +585,25 @@ function updateHold(dt) {
   }
 }
 
+// what the hand visibly does for each kind of thing
+function actFor(it) {
+  const t = it.type;
+  if (t === 'stone') return ['take', it.pos, 'stone'];
+  if (t === 'fuseA' || t === 'fuseB') return ['take', it.pos, 'fuse'];
+  if (t === 'card') return ['take', it.pos, 'card'];
+  if (t === 'clock') return ['take', it.pos, 'clock'];
+  if (t === 'phone') return ['take', it.pos];
+  if (t === 'note') return ['read', it.pos];
+  if (t === 'locked') return ['rattle', it.pos];
+  if (t === 'panel' && HOLD.panel.ok()) return ['pump', it.pos];
+  if (['door', 'slam', 'locker', 'labdoor', 'cab'].includes(t)) return ['push', it.pos];
+  return ['press', it.pos];
+}
+
 function interact() {
   const it = focus;
   if (!it) return;
-  vm.reach();
+  vm.act(...actFor(it));
   if (HOLD[it.type] && HOLD[it.type].ok()) {
     hold = { it, t: 0, tick: 0.25 };
     return;
@@ -524,12 +634,31 @@ function interact() {
     case 'card':
       take(it);
       f.card = true;
+      // it was waiting for that: it comes down the flooded passage
+      later(3.2, () => {
+        if (!monster.active || game.state !== 'play') return;
+        if (monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z)) > 10) {
+          monster.spawn(V(43.2, 0, 27.5), 'wander');
+          audio.crash(V(43, 2.5, 27.5));
+        }
+        monster.startChase();
+        game.hint('Оно в переходе. Кабинет — тупик. Прячься.', 4, true);
+      });
       game.hint('Карта. Шлюз безэхового блока — в конце затопленного перехода.');
       saveCheckpoint();
       break;
     case 'fuseB':
       take(it);
       f.fuseB = true;
+      later(1.6, () => {
+        if (!monster.active || game.state !== 'play') return;
+        const drop = V(53, 0, 15.5);
+        audio.crash(V(53, 4.3, 15.5));
+        echo.emit(V(53, 4.3, 15.5), { radius: 16, speed: 12, strength: 1.4, color: COLORS.monster });
+        monster.spawn(drop, 'wander');
+        monster.startChase();
+        game.hint('Сверху. Шлюз — и вниз, в вентканал за моргом.', 4, true);
+      });
       game.hint('Оба ПН-2. Генераторная — к северу от атриума.');
       saveCheckpoint();
       break;
@@ -542,14 +671,40 @@ function interact() {
     case 'cab':
       if (f.arrived) ending();
       break;
+    case 'slam': {
+      const closed = level.toggleSlam(it.door);
+      if (closed === null) break;
+      if (closed) {
+        audio.play('slam', it.pos, { gain: 1.0, rate: 1.1, wet: 0.8 });
+        game.noise(it.pos.clone(), { radius: 7, visual: 6, source: 'player', kind: 'door', color: COLORS.player, strength: 1 });
+        if (!f.slamHint) {
+          f.slamHint = true;
+          game.hint('Дверь задержит его на пару секунд. Не больше.', 4);
+        }
+      } else {
+        audio.play('door', it.pos, { gain: 0.4, rate: 1.4, wet: 0.5 });
+        game.noise(it.pos.clone(), { radius: 2.5, visual: 2, source: 'player', kind: 'door', color: COLORS.player, strength: 0.5 });
+      }
+      break;
+    }
     case 'locker':
       if (player.hidden) {
         player.unhide();
         $('slits').classList.add('hidden');
+        if (it.low) break;
         audio.play('door', it.pos, { gain: 0.35, rate: 1.6, wet: 0.4 });
         game.noise(it.pos.clone(), { radius: 2.5, visual: 2, source: 'player', kind: 'door', color: COLORS.player, strength: 0.5 });
       } else {
         player.hide(it);
+        if (it.low) {
+          audio.play('creak', it.pos, { gain: 0.25, rate: 1.4, wet: 0.3 });
+          game.noise(it.pos.clone(), { radius: 1.8, visual: 1.5, source: 'player', kind: 'crouch', color: COLORS.player, strength: 0.4 });
+          if (!f.bedHint) {
+            f.bedHint = true;
+            game.hint('Под кроватью тебя не видно. Но дыхание слышно — если оно встанет рядом, не дыши.', 5);
+          }
+          break;
+        }
         $('slits').classList.remove('hidden');
         audio.play('door', it.pos, { gain: 0.3, rate: 1.7, wet: 0.4 });
         game.noise(it.pos.clone(), { radius: 2.2, visual: 2, source: 'player', kind: 'door', color: COLORS.player, strength: 0.5 });
@@ -574,6 +729,10 @@ function interact() {
       }
       break;
 
+    case 'clock':
+    case 'phone':
+      extras.interact(it);
+      break;
     case 'locked':
       level.rattle(it.door);
       audio.rattle(it.pos);
@@ -655,7 +814,7 @@ function releaseMonster() {
     audio.monsterRoar(vent);
     echo.emit(vent, { radius: 34, speed: 13, strength: 1.4, decay: 0.5, color: COLORS.monster });
     monster.spawn(V(28, 0, 25.6), 'investigate');
-    monster.goTo(V(14, 0, 27.5), 'investigate');
+    monster.goTo(V(7.5, 0, 27.5), 'hunt');
     game.hint('В атриуме что-то сорвалось с вентиляции. Тяжёлое. Живое.', 6);
     later(6.0, () => game.hint('Оно знает только звук. Подойдёт — замри и не дыши [Q].', 5));
     later(12.0, () => game.hint('[V] — вслушаться: замри и услышь, откуда оно идёт.', 5));
@@ -677,6 +836,7 @@ function startGenerator() {
   generator.spinUp(3.5);
   game.noise(GEN_POS.clone(), { radius: 30, visual: 26, source: 'machine', kind: 'machine', color: COLORS.machine, strength: 1.4 });
   monster.forcedTarget = V(30, 0, 11);
+  if (monster.active && monster.state !== 'chase') monster.goTo(level.randomWalkable(V(30, 0, 10), 3) || V(30, 0, 11), 'hunt');
   game.hint('Генератор ожил. Девяносто децибел. Лифтовый холл — на запад.', 6);
   saveCheckpoint();
 }
@@ -689,7 +849,6 @@ function callElevator() {
   audio.ding(V(9.55, 1.3, 3.1));
   if (!lift) lift = audio.createMachine(LIFT_POS, { type: 'motor', gain: 0.3 });
   lift.setGain(1, 2);
-  monster.despawn();
   monster.forcedTarget = null;
   saveCheckpoint();
   siege.start();
@@ -774,6 +933,7 @@ function die() {
   $('slits').classList.add('hidden');
   if (siege.active) siege.stop();
   game.state = 'dying';
+  setListen(1); // the last thing you see is its echo
   game.deaths++;
   player.frozen = true;
   player.holding = false;
@@ -812,7 +972,7 @@ function updateScare(dt) {
   if (t > 2.3) {
     scare = null;
     game.state = 'dead';
-    camera.fov = 72;
+    camera.fov = 80;
     camera.updateProjectionMatrix();
     fx.uniforms.uGlitch.value = 0;
     $('tip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
@@ -843,7 +1003,7 @@ function restoreCheckpoint() {
   const c = game.checkpoint;
   timers.length = 0;
   scare = null;
-  camera.fov = 72;
+  camera.fov = 80;
   camera.updateProjectionMatrix();
   fx.uniforms.uGlitch.value = 0;
   fx.uniforms.uWhite.value = 0;
@@ -854,6 +1014,8 @@ function restoreCheckpoint() {
     it.taken = c.taken[i];
     it.obj.visible = !it.taken;
   });
+  extras.reset();
+  for (const d of level.doors) if (d.kind === 'slam') Object.assign(d, { closed: false, t: 1, hp: 3, broken: false, box: null });
   level.setDoor('lab', !!game.flags.labOpen);
   level.setDoor('lift', !!game.flags.arrived);
   monster.forcedTarget = c.forced ? c.forced.clone() : null;
@@ -973,6 +1135,7 @@ function startGame(fromSave = false) {
 // ------------------------------------------------------------------ ambient world
 let sightCd = 0, sightT = 0, glitchT = 0;
 let stalkT = 75;
+let directorT = 45;
 let drone = null;
 function updateDread(dt) {
   // catching sight of it: lit by your own echo, in view, nothing in between
@@ -994,6 +1157,16 @@ function updateDread(dt) {
         player.shake = Math.max(player.shake || 0, 0.7);
         game.fear = Math.min(1.5, game.fear + 0.5);
       }
+    }
+  }
+  // the director: it never stays away for long
+  directorT -= dt;
+  if (directorT <= 0 && monster.active && !siege.active) {
+    directorT = 50 + Math.random() * 25;
+    const d = monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z));
+    if (d > 16 && (monster.state === 'wander' || monster.state === 'search')) {
+      const t = level.randomWalkable(player.pos, 8, 3);
+      if (t) monster.goTo(t, 'investigate');
     }
   }
   // footsteps behind you, when it is nowhere near
@@ -1027,14 +1200,12 @@ let listenK = 0;
 function updateListen(dt) {
   const on = player.listening && game.state === 'play';
   listenK = THREE.MathUtils.lerp(listenK, on ? 1 : 0, Math.min(1, dt * 5));
+  // the creature's red waves: shown only while listening (and when it gets you)
+  setListen(game.state === 'dying' ? 1 : Math.min(1, listenK * 1.4));
   $('listen').classList.toggle('hidden', listenK < 0.05);
   if (audio.ready && !audio.muted && game.state === 'play') audio.master.gain.setTargetAtTime(+$('vol').value * (1 + listenK * 0.35), audio.t, 0.2);
   let src = null, loud = 0;
-  if (siege.active) {
-    const n = siege.cur();
-    src = n.ear || n.pos;
-    loud = 0.4 + n.loud * 0.5;
-  } else if (monster.active) {
+  if (monster.active) {
     src = monster.pos;
     const d = monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z));
     loud = Math.max(0, 1 - d / 30) * ((monster.curSpeed || 0) > 0.1 ? 1 : 0.45);
@@ -1082,7 +1253,7 @@ function updateAmbient(dt) {
   }
   // key items softly hum so they can be found
   for (const it of level.items) {
-    if (it.taken || ['stone', 'locked', 'shutterA', 'shutterB', 'seismo', 'locker'].includes(it.type)) continue;
+    if (it.taken || ['stone', 'locked', 'shutterA', 'shutterB', 'seismo', 'locker', 'slam', 'clock', 'phone'].includes(it.type)) continue;
     it.hum = (it.hum ?? Math.random() * 4) - dt;
     if (it.hum <= 0) {
       it.hum = 3.5 + Math.random();
@@ -1122,7 +1293,7 @@ function updateFear(dt) {
   if (monster.active) {
     const d = monster.pos.distanceTo(V(player.pos.x, 0, player.pos.z));
     const st = monster.state;
-    const k = st === 'hunt' ? 1 : st === 'windup' || st === 'lunge' ? 1.4 : st === 'sniff' ? 1.2 : 0.75;
+    const k = st === 'chase' ? 1.5 : st === 'hunt' ? 1 : st === 'windup' || st === 'lunge' ? 1.4 : st === 'sniff' ? 1.2 : 0.75;
     target = Math.max(0, 1 - d / 15) * k;
   }
   if (game.state === 'dying') target = 1.5;
@@ -1136,10 +1307,51 @@ function updateFear(dt) {
   if (heartT <= 0) heartT = 0.5;
   if (audio.ctx) audio.setAmbience(0.12 * (1 - Math.min(1, game.fear) * 0.6) * (1 - listenK * 0.8));
   flash = Math.max(0, flash - dt * 0.8);
+  // how enclosed you are: in a tight room your own sounds light every wall at
+  // once, so they are drawn softer there (corridors and halls are unchanged)
+  eyeT -= dt;
+  if (eyeT <= 0) {
+    eyeT = 0.2;
+    let sum = 0;
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2, dx = Math.cos(a), dz = Math.sin(a);
+      let d = 0.25;
+      while (d < 8 && level.open(Math.floor(player.pos.x + dx * d), Math.floor(player.pos.z + dz * d))) d += 0.25;
+      sum += d;
+    }
+    roomK = THREE.MathUtils.clamp(sum / 8 / 3.6, 0.55, 1);
+  }
+  // shutter smear: how far the picture swung this frame (yaw/pitch and the bob)
+  {
+    const ry = camera.rotation.y, rx = camera.rotation.x, py = camera.position.y;
+    let dy = ry - (blurPrev.y ?? ry);
+    if (dy > Math.PI) dy -= Math.PI * 2;
+    if (dy < -Math.PI) dy += Math.PI * 2;
+    const dx = rx - (blurPrev.x ?? rx), dh = py - (blurPrev.h ?? py);
+    blurPrev.y = ry; blurPrev.x = rx; blurPrev.h = py;
+    const vf = THREE.MathUtils.degToRad(camera.fov), hf = 2 * Math.atan(Math.tan(vf / 2) * camera.aspect);
+    const k = 1.15 * Math.min(1, 1 / 60 / Math.max(dt, 1e-3)); // per 60 Hz frame
+    const bx = THREE.MathUtils.clamp((-dy / hf) * k, -0.035, 0.035);
+    const by = THREE.MathUtils.clamp((dx / vf + dh * 0.6) * k, -0.025, 0.025);
+    const b = fx.uniforms.uBlur.value;
+    b.x += (bx - b.x) * Math.min(1, dt * 25);
+    b.y += (by - b.y) * Math.min(1, dt * 25);
+  }
   fx.uniforms.uFear.value = Math.min(1.2, game.fear * 0.8 + (player.holding ? 0.15 : 0));
   fx.uniforms.uFlash.value = flash;
   if (game.state !== 'dying') fx.uniforms.uGlitch.value = glitchT > 0 ? 0.55 : 0;
+  // the implant's lag ("smearing" — objects trailing copies of themselves):
+  // barely there when calm, worse with fear, worst in a chase or when the air runs out
+  const chaseK = monster.active && monster.state === 'chase' ? 1 : 0;
+  const airK = player.holding ? THREE.MathUtils.smoothstep(1 - player.breathCap, 0.35, 0.95) : THREE.MathUtils.smoothstep(1 - player.breathCap, 0.6, 1.0) * 0.6;
+  const smearT = game.state === 'dying' ? 1 : Math.min(1, Math.max(chaseK, Math.min(1, game.fear) * 0.7, airK));
+  smear += (smearT - smear) * Math.min(1, dt * (smearT > smear ? 2.5 : 0.8));
+  // per-frame decay, so it looks the same at any frame rate
+  afterimage.uniforms.damp.value = Math.pow(THREE.MathUtils.lerp(0.42, 0.9, smear), Math.max(0.25, dt * 60));
 }
+let smear = 0;
+let eyeT = 0;
+const blurPrev = {};
 
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
@@ -1161,7 +1373,7 @@ function tick(dt) {
     {
       const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
       vm.wallDist = 9;
-      for (const d of [0.35, 0.5, 0.65, 0.8]) {
+      for (const d of [0.35, 0.5, 0.65, 0.8, 1.0, 1.25, 1.6]) {
         const x = player.pos.x + fx * d, z = player.pos.z + fz * d;
         if (!level.open(Math.floor(x), Math.floor(z)) || level.blockedPoint(x, z, 0.05)) {
           vm.wallDist = d;
@@ -1181,6 +1393,7 @@ function tick(dt) {
     updateHold(dt);
     touchCd -= dt;
     if (siege.active) siege.update(dt);
+    extras.update(dt);
     if (radarT > 0) {
       radarT -= dt;
       drawRadar(radarNode);
@@ -1206,7 +1419,7 @@ frame();
 // debug handle
 window.__siege = siege;
 window.__game = {
-  game, player, monster, level, echo, audio, camera,
+  game, player, monster, level, echo, audio, camera, vm, gtao, composer, extras,
   tick(n = 1, dt = 1 / 60) {
     for (let i = 0; i < n; i++) tick(dt);
   },

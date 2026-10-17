@@ -63,7 +63,7 @@ export function curtain(L, length, { height = 2.3, folds = 10, drop = 0.3 } = {}
 }
 
 export function cabinet(L, w = 0.9, h = 1.9, d = 0.45, { glass = true } = {}) {
-  L = K(L, 'paint');
+  L = K(L, Math.random() < 0.5 ? 'pmetal2' : 'paint');
   L.box(0, h / 2, 0, w, h, d);
   L.box(-w / 4, h * 0.62, d / 2, w / 2 - 0.03, h * 0.7, 0.02, { collide: false });
   L.box(w / 4, h * 0.62, d / 2, w / 2 - 0.03, h * 0.7, 0.02, { collide: false });
@@ -72,7 +72,7 @@ export function cabinet(L, w = 0.9, h = 1.9, d = 0.45, { glass = true } = {}) {
 }
 
 export function desk(L, w = 1.4, d = 0.7) {
-  L = K(L, 'wood');
+  L = K(L, Math.random() < 0.4 ? 'chip' : 'wood');
   L.box(0, 0.74, 0, w, 0.04, d);
   for (const [x, z] of [[-w / 2 + 0.05, -d / 2 + 0.05], [w / 2 - 0.05, -d / 2 + 0.05], [-w / 2 + 0.05, d / 2 - 0.05], [w / 2 - 0.05, d / 2 - 0.05]])
     L.box(x, 0.36, z, 0.04, 0.72, 0.04);
@@ -131,9 +131,10 @@ export function lockers(L, count) {
   L = K(L, 'paint');
   for (let i = 0; i < count; i++) {
     const x = (i - (count - 1) / 2) * 0.5;
-    L.box(x, 0.95, 0, 0.48, 1.9, 0.5);
+    const lk = Math.random() < 0.45 ? 'pmetal2' : 'paint';
+    L.box(x, 0.95, 0, 0.48, 1.9, 0.5, { key: lk });
     const open = false;
-    L.box(x + (open ? -0.15 : 0), 0.95, 0.26 + (open ? 0.2 : 0), 0.44, 1.8, 0.02, { collide: false, rot: [0, open ? 1.1 : 0, 0] });
+    L.box(x + (open ? -0.15 : 0), 0.95, 0.26 + (open ? 0.2 : 0), 0.44, 1.8, 0.02, { collide: false, rot: [0, open ? 1.1 : 0, 0], key: lk });
     for (let k = 0; k < 3; k++) L.box(x, 1.6 + k * 0.05, 0.27, 0.3, 0.01, 0.01, { collide: false, edges: 0 });
   }
 }
@@ -161,7 +162,7 @@ export function corpse(L, x, y, z, { bag = false, ry = 0, sheet = false, pose = 
 }
 
 export function crate(L, s = 0.8, { ry = 0, y = 0 } = {}) {
-  L = K(L, 'wood');
+  L = K(L, Math.random() < 0.6 ? 'boardsM' : 'chip');
   L.box(0, y + s / 2, 0, s, s, s, { rot: [0, ry, 0] });
   L.box(0, y + s / 2, 0, s + 0.02, 0.06, s + 0.02, { collide: false, rot: [0, ry, 0] });
 }
@@ -225,7 +226,7 @@ export function vent(L, w = 1.2, d = 0.8) {
 }
 
 export function drawerWall(L, cols, rows, { openIdx = -1 } = {}) {
-  L = K(L, 'iron');
+  L = K(L, 'steel2');
   const w = 0.8, h = 0.7;
   L.box(0, (rows * h) / 2 + 0.2, 0, cols * w + 0.1, rows * h + 0.4, 0.8);
   let k = 0;
@@ -373,7 +374,7 @@ export function sign(L, w = 0.8, h = 0.3) {
 }
 
 export function generator(L) {
-  L = K(L, 'paint');
+  L = K(L, 'pmetal2');
   L.box(0, 1.3, 0, 7, 2.6, 3);
   L.box(0, 2.75, 0, 6, 0.3, 2.4, { collide: false });
   for (let i = 0; i < 6; i++) L.box(-2.5 + i, 1.3, 1.52, 0.6, 2.0, 0.04, { collide: false });
@@ -474,7 +475,7 @@ export function deskLamp(L) {
 }
 
 export function filingCabinet(L, { open = true } = {}) {
-  const P = K(L, 'iron');
+  const P = K(L, Math.random() < 0.5 ? 'metal3' : 'iron');
   P.box(0, 0.7, 0, 0.47, 1.4, 0.62);
   for (let k = 0; k < 4; k++) {
     const o = open && k === 1 ? 0.38 : 0;

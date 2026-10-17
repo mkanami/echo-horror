@@ -95,7 +95,7 @@ export class Player {
       p = this.vm.tipWorld();
       p.y = Math.max(0.05, p.y);
     }
-    this.game.noise(p, { radius: 5, visual: 10, source: 'player', kind: 'click', color: COLORS.click, speed: 13, strength: 1.1, decay: 0.55 });
+    this.game.noise(p, { radius: 5, visual: 10, source: 'player', kind: 'click', color: COLORS.click, speed: 13, strength: 0.68, decay: 2.1 });
   }
 
   throwStone(scene) {
@@ -135,13 +135,14 @@ export class Player {
     const moved = Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
 
     // stamina
-    if (this.running) this.stamina = Math.max(0, this.stamina - dt * 0.2);
+    if (this.running) this.stamina = Math.max(0, this.stamina - dt * 0.12);
     else this.stamina = Math.min(1, this.stamina + dt * (this.moving ? 0.06 : 0.13));
 
     // footsteps
     this.stepAcc += moved;
-    const stride = this.crouch ? 0.55 : this.running ? 1.1 : 0.78;
+    const stride = (this.stride = this.crouch ? 0.55 : this.running ? 1.1 : 0.78);
     if (this.stepAcc > stride) {
+      this.steps = (this.steps || 0) + 1;
       this.stepAcc = 0;
       this.footstep();
     }
@@ -194,39 +195,101 @@ export class Player {
     // every footfall, sways with breathing, and shakes when something heavy walks near.
     const lowCeil = this.level.ceilAt(Math.floor(this.pos.x), Math.floor(this.pos.z)) < 1.7;
     if (lowCeil) this.crouch = true;
-    const targetEye = this.crouch ? 1.0 : 1.65;
+    const targetEye = this.hidden && this.hidden.low ? 0.27 : this.crouch ? 1.0 : 1.65;
     this.eye += (targetEye - this.eye) * Math.min(1, dt * 7);
     const sp = Math.hypot(this.vel.x, this.vel.z);
     const walk = Math.min(1, sp / 2.3);
     this.bob += dt * sp * 3.4;
     this.time = (this.time || 0) + dt;
-    // spring for the vertical head offset
+    const T = this.time;
+    const fear = Math.min(1.2, this.game.fear || 0);
+    const tired = 1 - this.stamina;
+    const MU = THREE.MathUtils;
+    // smooth pseudo-noise (sum of incommensurate sines): drift, not jitter
+    const sn = (t, o) => Math.sin(t * 1.13 + o) * 0.5 + Math.sin(t * 2.71 + o * 1.7) * 0.3 + Math.sin(t * 4.37 + o * 2.3) * 0.2;
+
+    // ---- gait: an inverted pendulum. The head is lowest as the heel lands
+    // (a sharp dip) and rides over the planted foot in a smooth arc; the
+    // weight rocks from foot to foot.
+    const stepF = (this.steps || 0) + Math.min(1, this.stepAcc / (this.stride || 0.78));
+    const frac = stepF - Math.floor(stepF);
+    this.gaitK = MU.lerp(this.gaitK || 0, this.moving && !this.hidden ? 1 : 0, Math.min(1, dt * 5));
+    const gk = this.gaitK * MU.smoothstep(sp, 0.2, 1.4);
+    const ampY = this.crouch ? 0.008 : this.running ? 0.03 : 0.006 + 0.011 * walk;
+    const ampX = (this.crouch ? 0.014 : this.running ? 0.024 : 0.012 + 0.006 * walk) * 1.75; // the camera rides the chest: the torso rocks it
+    const gaitY = (-Math.cos(Math.PI * 2 * frac) * 0.8 + (2 * Math.sin(Math.PI * frac) - 1) * 0.2) * ampY * gk;
+    const gaitX = Math.sin(stepF * Math.PI) * ampX * gk;
+    // springs: vertical (footfalls, crouching, stopping) and a small nod at each heel strike
     this.headV = this.headV || 0;
     this.headY = this.headY || 0;
-    const kSpring = 160, damp = 16;
-    this.headV += (-kSpring * this.headY - damp * this.headV) * dt;
+    this.headV += (-150 * this.headY - 15 * this.headV) * dt;
     this.headY += this.headV * dt;
-    // breathing rise and fall, deeper when winded or scared
-    const tired = 1 - this.stamina;
-    const breathAmp = (0.004 + tired * 0.012 + (this.game.fear || 0) * 0.004) * (this.holding ? 0.15 : 1);
-    const breathY = Math.sin(this.time * (1.9 + tired * 2.5)) * breathAmp;
-    // side-to-side weight shift between steps
-    const sway = Math.sin(this.bob * 0.5) * 0.03 * walk;
-    // external shake (monster footsteps, impacts)
+    this.nodV = this.nodV || 0;
+    this.nod = this.nod || 0;
+    this.nodV += (-120 * this.nod - 13 * this.nodV) * dt;
+    this.nod += this.nodV * dt;
+    if ((this.steps || 0) !== this.lastStepN) {
+      this.lastStepN = this.steps || 0;
+      this.nodV -= this.crouch ? 0.065 : this.running ? 0.26 : 0.11;
+    }
+    if (this.crouch !== this.wasCrouch) {
+      this.headV -= this.crouch ? 0.5 : -0.25;
+      this.wasCrouch = this.crouch;
+    }
+    // ---- breathing: chest rises, head drifts a little forward and back
+    const bRate = 1.7 + tired * 2.6 + fear * 0.9;
+    const breathAmp = (0.004 + tired * 0.012 + fear * 0.006) * (this.holding ? 0.12 : 1);
+    const breathY = Math.sin(T * bRate) * breathAmp;
+    const breathZ = Math.sin(T * bRate - 0.6) * breathAmp * 0.6;
+    // ---- external shake (its footsteps, impacts): fast but smooth
     this.shake = Math.max(0, (this.shake || 0) - dt * 2.5);
     const sh = this.shake * this.shake;
-    const shX = (Math.random() - 0.5) * 0.03 * sh, shY = (Math.random() - 0.5) * 0.03 * sh;
-    this.camera.position.set(this.pos.x, this.eye + this.headY + breathY + Math.abs(Math.sin(this.bob)) * 0.012 * walk + shY, this.pos.z);
-    this.camera.position.x += Math.cos(this.yaw) * (sway + shX);
-    this.camera.position.z -= Math.sin(this.yaw) * (sway + shX);
-    // lean into strafes, roll with the step, pitch forward when running
-    this.roll = THREE.MathUtils.lerp(this.roll || 0, -mx * 0.02 * walk + Math.sin(this.bob * 0.5) * 0.006 * walk, Math.min(1, dt * 7));
-    const runPitch = this.running ? -0.035 : 0;
-    this.runPitch = THREE.MathUtils.lerp(this.runPitch || 0, runPitch, Math.min(1, dt * 4));
-    const swayP = Math.sin(this.time * 0.8) * 0.003 * (1 - walk) + this.headY * 0.6 + sh * (Math.random() - 0.5) * 0.02;
-    const swayY = Math.cos(this.time * 0.55) * 0.0025 * (1 - walk);
+    const shX = sn(T * 17, 1) * 0.014 * sh, shY = sn(T * 19, 4) * 0.014 * sh;
+    // ---- tremor: fear, and a breath held too long
+    const trem = fear * fear * 0.0022 + (this.holding ? MU.smoothstep(this.holdT, 4, 9) * 0.0028 : 0);
+    const trX = sn(T * 13, 7) * trem, trY = sn(T * 15, 9) * trem;
+    const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
+    this.camera.position.set(this.pos.x + fx * breathZ, this.eye + this.headY + breathY + gaitY + shY + trY, this.pos.z + fz * breathZ);
+    const side = gaitX + shX + trX;
+    this.camera.position.x += Math.cos(this.yaw) * side;
+    this.camera.position.z -= Math.sin(this.yaw) * side;
+    // what the head adds on top of the body (the hands use it to stay with the body)
+    this.headOffset = this.headOffset || new THREE.Vector3();
+    this.headOffset.set(side, this.headY + breathY + gaitY + shY + trY, -breathZ);
+
+    // ---- turning: the body leans into a turn; the head lags a hair and settles
+    let dyaw = this.yaw - (this.prevYaw ?? this.yaw);
+    if (dyaw > Math.PI) dyaw -= Math.PI * 2;
+    if (dyaw < -Math.PI) dyaw += Math.PI * 2;
+    this.prevYaw = this.yaw;
+    const turnRate = MU.clamp(dyaw / Math.max(dt, 1e-3), -6, 6);
+    this.turnLean = MU.lerp(this.turnLean || 0, turnRate * 0.008 * (0.5 + walk), Math.min(1, dt * 6));
+    this.lagV = this.lagV || 0;
+    this.lag = this.lag || 0;
+    this.lagV += (-75 * this.lag - 8 * this.lagV - turnRate * 0.14) * dt;
+    this.lag = MU.clamp(this.lag + this.lagV * dt, -0.042, 0.042);
+    // ---- speeding up tips the head back, stopping throws it forward and down
+    const acc = (sp - (this.prevSp ?? sp)) / Math.max(dt, 1e-3);
+    this.prevSp = sp;
+    this.accV = this.accV || 0;
+    this.accP = this.accP || 0;
+    this.accV += (-90 * this.accP - 12 * this.accV + MU.clamp(acc, -25, 25) * 0.05) * dt;
+    this.accP += this.accV * dt;
+    if (acc < -12) this.headV -= Math.min(0.15, -acc * 0.004) * dt * 60;
+    // ---- stumbling when you run yourself out
+    const stumble = this.running && this.stamina < 0.3 ? (0.3 - this.stamina) * 0.05 : 0;
+    const stP = stumble * sn(T * 6, 3);
+    // ---- rotation. The eyes keep the view steady: most of the bob is
+    // translation, the gaze compensates for it (looking at a point ~6 m ahead)
+    this.roll = MU.lerp(this.roll || 0, -mx * 0.03 * walk - gaitX * 0.85 + sn(T * 3.1, 11) * 0.006 * gk + this.turnLean + stP * 0.6 + (this.listening ? 0.075 : 0), Math.min(1, dt * 8));
+    const runPitch = this.running ? -0.04 : this.crouch && this.moving ? -0.02 : 0;
+    this.runPitch = MU.lerp(this.runPitch || 0, runPitch, Math.min(1, dt * 4));
+    const idle = 1 - gk;
+    const drift = 0.0034 * idle + 0.0026 * gk + fear * 0.006;
+    const swayP = sn(T * 0.45, 0) * drift + sn(T * 2.3, 6) * 0.0045 * gk - gaitY / 9 + this.headY * 0.4 + this.nod - this.accP + stP + sh * sn(T * 23, 2) * 0.012;
+    const swayY = sn(T * 0.37, 5) * drift - gaitX * 0.3 + this.lag;
     if (!this.lookTarget) {
-      const fovT = 72 + (this.running ? 6 : 0) - (this.holding ? 3 : 0) - (this.listening ? 4 : 0);
+      const fovT = 80 + (this.running ? 6 : 0) - (this.holding ? 3 : 0) - (this.listening ? 4 : 0);
       if (Math.abs(this.camera.fov - fovT) > 0.05) {
         this.camera.fov += (fovT - this.camera.fov) * Math.min(1, dt * 4);
         this.camera.updateProjectionMatrix();
@@ -244,7 +307,7 @@ export class Player {
   }
 
   footstep() {
-    this.headV = (this.headV || 0) - (this.crouch ? 0.12 : this.running ? 0.55 : 0.28);
+    this.headV = (this.headV || 0) - (this.crouch ? 0.04 : this.running ? 0.17 : 0.07);
     const surf = this.level.floorAt(this.pos.x, this.pos.z);
     const mul = SURF_MUL[surf] ?? 1;
     const base = this.crouch ? 1.1 : this.running ? 9 : 3.8;
