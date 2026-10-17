@@ -65,6 +65,28 @@ vmPass.clearDepth = true;
 // the implant lags: images linger and smear as they fade (the world only —
 // your own hands are drawn after it and stay crisp)
 const afterimage = new AfterimagePass(0.42);
+// psychosis: as it builds, every lingering copy loses its green and blue a little
+// each frame, so the older the trail the redder it bleeds
+afterimage.uniforms.uRed = { value: 0 };
+afterimage.compFsMaterial.fragmentShader = `
+  uniform float damp; uniform float uRed;
+  uniform sampler2D tOld; uniform sampler2D tNew;
+  varying vec2 vUv;
+  vec4 when_gt(vec4 x, float y) { return max(sign(x - y), 0.0); }
+  void main() {
+    vec4 texelOld = texture2D(tOld, vUv);
+    vec4 texelNew = texture2D(tNew, vUv);
+    // the picture here is dim (linear values mostly under 0.1), so the cut-off that
+    // ends a trail works on brightness, low enough for trails to show at all
+    float lo0 = dot(texelOld.rgb, vec3(0.3, 0.55, 0.15));
+    texelOld *= damp * step(0.035, lo0);
+    // the copy shows where it is brighter than what is there now — the trail —
+    // judged by its red (which it keeps), and drawn as it is, tint and all
+    float lo = max(texelOld.r, dot(texelOld.rgb, vec3(0.3, 0.55, 0.15))), ln = dot(texelNew.rgb, vec3(0.3, 0.55, 0.15));
+    texelOld.gb *= 1.0 - uRed;
+    gl_FragColor = vec4(lo > ln ? texelOld.rgb : texelNew.rgb, 1.0);
+  }`;
+afterimage.compFsMaterial.needsUpdate = true;
 composer.addPass(afterimage);
 // (distance haze is drawn by the echo shader itself, where the distance is known)
 composer.addPass(vmPass);
@@ -87,10 +109,11 @@ const fx = new ShaderPass({
     uRes: { value: new THREE.Vector2(innerWidth, innerHeight) },
     uBlur: { value: new THREE.Vector2() },
     uExposure: { value: 1 },
+    uSmear: { value: 0 },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float uTime, uFear, uFlash, uGlitch, uWhite; uniform vec2 uRes; uniform vec2 uBlur; uniform float uExposure; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float uTime, uFear, uFlash, uGlitch, uWhite; uniform vec2 uRes; uniform vec2 uBlur; uniform float uExposure; uniform float uSmear; varying vec2 vUv;
     float rand(vec2 c){ return fract(sin(dot(c, vec2(12.9898,78.233))) * 43758.5453); }
     void main(){
       vec2 c = vUv - 0.5;
@@ -102,7 +125,7 @@ const fx = new ShaderPass({
       uv.x += (rand(vec2(band, 1.0)) - 0.5) * 0.12 * uGlitch * step(0.62, rand(vec2(band, 2.0)));
       uv.y += (rand(vec2(floor(uTime * 24.0), 3.0)) - 0.5) * 0.03 * uGlitch;
       // cheap-lens fringing, growing toward the edges; motion smear along the camera's swing
-      vec2 ca = c * (0.0015 + dot(c, c) * 0.021 + uFear * 0.006 + uGlitch * 0.03);
+      vec2 ca = c * (0.0015 + dot(c, c) * (0.021 + uSmear * uSmear * 0.03) + uFear * 0.006 + uGlitch * 0.03); // the fringe tears wider in a psychosis
       vec3 col;
       if (dot(uBlur, uBlur) < 1e-7) col = vec3(texture2D(tDiffuse, uv + ca).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - ca).b);
       else {
@@ -1348,6 +1371,10 @@ function updateFear(dt) {
   smear += (smearT - smear) * Math.min(1, dt * (smearT > smear ? 2.5 : 0.35)); // lingers after the danger passes
   // per-frame decay, so it looks the same at any frame rate
   afterimage.uniforms.damp.value = Math.pow(THREE.MathUtils.lerp(0.5, 0.92, smear), Math.max(0.25, dt * 60));
+  // trails go red only when it's bad (none while calm), per 60 Hz frame
+  const redK = THREE.MathUtils.smoothstep(smear, 0.35, 1.0) * 0.12;
+  afterimage.uniforms.uRed.value = 1 - Math.pow(1 - redK, Math.max(0.25, dt * 60));
+  fx.uniforms.uSmear.value = smear;
 }
 let smear = 0;
 let eyeT = 0;
