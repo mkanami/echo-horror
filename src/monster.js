@@ -256,6 +256,7 @@ export class Monster {
     this.onKill = null;
     this.forcedTarget = null;
     this.headWorld = new THREE.Vector3();
+    this.clock = 0; // game time while active
     // eased after repeated deaths at the same checkpoint
     this.assist = { hear: 1, speed: 1 };
   }
@@ -344,7 +345,8 @@ export class Monster {
     // it learns: stones thrown again and again stop fooling it, and it goes
     // looking for whoever is throwing them
     if (source === 'stone' && playerPos) {
-      const now = performance.now() / 1000;
+      // game time, so a pause doesn't count
+      const now = this.clock;
       this.lures = (this.lures || []).filter((t) => now - t < 70);
       this.lures.push(now);
       if (this.lures.length >= 3) {
@@ -454,6 +456,7 @@ export class Monster {
 
   update(dt, player, game) {
     if (!this.active) return;
+    this.clock += dt;
     this.stateT += dt;
     this.suspicion = Math.max(0, this.suspicion - dt * (this.state === 'hunt' ? 0.04 : 0.09));
     if (this.state !== 'sniff') this.sniffCd -= dt;
