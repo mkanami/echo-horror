@@ -1345,9 +1345,9 @@ function updateFear(dt) {
   const chaseK = monster.active && monster.state === 'chase' ? 1 : 0;
   const airK = player.holding ? THREE.MathUtils.smoothstep(1 - player.breathCap, 0.35, 0.95) : THREE.MathUtils.smoothstep(1 - player.breathCap, 0.6, 1.0) * 0.6;
   const smearT = game.state === 'dying' ? 1 : Math.min(1, Math.max(chaseK, Math.min(1, game.fear) * 0.7, airK));
-  smear += (smearT - smear) * Math.min(1, dt * (smearT > smear ? 2.5 : 0.8));
+  smear += (smearT - smear) * Math.min(1, dt * (smearT > smear ? 2.5 : 0.35)); // lingers after the danger passes
   // per-frame decay, so it looks the same at any frame rate
-  afterimage.uniforms.damp.value = Math.pow(THREE.MathUtils.lerp(0.42, 0.9, smear), Math.max(0.25, dt * 60));
+  afterimage.uniforms.damp.value = Math.pow(THREE.MathUtils.lerp(0.5, 0.92, smear), Math.max(0.25, dt * 60));
 }
 let smear = 0;
 let eyeT = 0;
